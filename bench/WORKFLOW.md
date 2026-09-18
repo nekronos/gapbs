@@ -94,7 +94,24 @@ experiment (what does 3x the L3 buy this kernel?), never the default. Every
 result records which CCD it was pinned to; a row without that is not comparable
 to anything.
 
-### Toolchain: build once, ship the binary
+### Build target: each machine is built for itself
+
+The target is built `-march=znver5`, the reference `-march=znver4`. What is
+compared between the two machines is the **delta a source change produces on
+each**, and compiler flags are held fixed within a machine across iterations, so
+that delta is uncontaminated even though the two binaries differ. Forcing one
+common binary would protect against a confound that only matters for an absolute
+cross-machine ratio, which is not a quantity this campaign uses -- and it would
+risk `znver4` code generation on Zen 5 scheduling prefetches worse than `znver5`
+would, suppressing the very effect being hunted.
+
+The residual risk is that a source change interacts with code generation
+differently on the two targets, so a gain labelled Zen 5-specific is partly a
+compiler artefact. It is detectable: rebuild both at one common ISA with
+`--march` and see whether the classification survives. Do that before any
+Zen 5-specific claim leaves the campaign.
+
+### Toolchain: build once per target, ship the binary
 
 Neither machine has clang, gcc, perf or numactl installed. Consequences:
 
@@ -399,14 +416,11 @@ Each of these produces a confident, wrong number rather than an error.
   (`-march=native` resolves to a different target on each) compares code
   generation as well as microarchitecture. Ship one binary; check the checksum
   in both rows.
-- **A `-march` the reference cannot execute.** Zen 5 is an ISA superset of Zen 4,
-  so a `-march=znver5` binary may fault on the 7950X3D with an illegal
-  instruction. The shipped binary is built for what both parts run —
-  `-march=znver4` is the natural choice; a `znver5` build measures on the target
-  only, and its Zen 4 row is blank, not zero.
-- **perf from elsewhere.** perf is built against the running kernel; a copy from
-  another machine may fail to open events, or lack this kernel's event tables.
-  Use the `nix-shell` invocation on the measuring machine.
+- **A `-march` the reference cannot execute.** Each machine is built for itself
+  -- `znver5` on the target, `znver4` on the reference -- so this does not arise
+  in normal use. It does if `--march` is used to force one common binary: a
+  `znver5` build can fault on the 7950X3D. Forcing a common ISA is a deliberate
+  cross-check, not the default.
 
 ## Reference baseline
 

@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 # Build once, ship to both Zen machines, measure the SAME binary on each.
 #
-#   bench/run-zen.sh --march x86-64-v3 --tier quick
+#   bench/run-zen.sh --tier quick
 #
 # Zen 5 is the optimisation target. Zen 4 is a reference, used only to classify
 # a gain as microarchitecture-specific or general -- never to gate it.
+#
+# Each machine gets a binary built for itself: -march=znver5 for the target,
+# -march=znver4 for the reference. What is compared between machines is the
+# DELTA a source change produces on each, and compiler flags are held fixed
+# within a machine across iterations, so that delta stays clean. Forcing one
+# common binary would instead risk znver4 code generation on Zen 5 scheduling
+# prefetches worse than znver5 would -- suppressing the very effect being
+# hunted. Pass --march to override both, which is how to cross-check whether a
+# result is a code-generation artefact rather than microarchitecture.
 #
 # Binaries are STATIC. NixOS has no generic dynamic loader, so a dynamically
 # linked binary built elsewhere exits 127 -- and perf reports counters for the
@@ -20,7 +29,7 @@ CPU=8                              # CCD1 on BOTH -> 32 MiB L3 each. Pinning Zen
 REMOTE_GRAPHS='$HOME/code/gapbs/benchmark/graphs'
 OCC=ls_alloc_mab_count             # validated as a true occupancy counter on both
 
-MARCH=x86-64-v3; TIER=quick; TRIALS=16; GRAPHS="kron urand"; TAG=""; HOSTS="zen5 zen4"
+MARCH=""; TIER=quick; TRIALS=16; GRAPHS="kron urand"; TAG=""; HOSTS="zen5 zen4"
 while [[ $# -gt 0 ]]; do case $1 in
   --march) MARCH=$2; shift 2 ;;  --tier) TIER=$2; shift 2 ;;
   --trials) TRIALS=$2; shift 2 ;; --graphs) GRAPHS=$2; shift 2 ;;
@@ -28,27 +37,28 @@ while [[ $# -gt 0 ]]; do case $1 in
   *) echo "unknown arg: $1" >&2; exit 2 ;;
 esac; done
 case $TIER in quick) SCALE=24 ;; standard) SCALE=27 ;; *) echo "tier: quick|standard" >&2; exit 2 ;; esac
-[[ -n "$TAG" ]] || TAG="${MARCH}-${TIER}"
+[[ -n "$TAG" ]] || TAG="${MARCH:-per-host}-${TIER}"
+march_for() { case $1 in zen4) echo znver4 ;; zen5) echo znver5 ;; esac; }
 
-BUILD="bench/build/zen-$MARCH"; OUT="bench/results/$TAG"; mkdir -p "$BUILD" "$OUT"
-CXXFLAGS="-std=c++11 -O3 -Wall -g -fno-omit-frame-pointer -static -march=$MARCH"
-echo "building pr + converter static at -march=$MARCH" >&2
-clang++ $CXXFLAGS src/pr.cc -o "$BUILD/pr"
-clang++ $CXXFLAGS src/converter.cc -o "$BUILD/converter"
-SHA=$(sha256sum "$BUILD/pr" | cut -c1-16)
-echo "binary sha256[0:16] = $SHA  (identical on every host below)" >&2
+OUT="bench/results/$TAG"; mkdir -p "$OUT"
 
 CSV="$OUT/zen.csv"
 echo "host,cpu,march,sha,tier,graph,nodes,edges,iters,trials,avg_time_s,min_trial_s,cycles_per_edge_iter,ipc,mlp" > "$CSV"
 
 for hostname in $HOSTS; do
   case $hostname in zen4) ADDR=$ZEN4 ;; zen5) ADDR=$ZEN5 ;; *) echo "host: zen4|zen5" >&2; exit 2 ;; esac
-  echo "=== $hostname ($ADDR) ===" >&2
+  M=${MARCH:-$(march_for "$hostname")}
+  BUILD="bench/build/$hostname-$M"; mkdir -p "$BUILD"
+  CXXFLAGS="-std=c++11 -O3 -Wall -g -fno-omit-frame-pointer -static -march=$M"
+  clang++ $CXXFLAGS src/pr.cc        -o "$BUILD/pr"
+  clang++ $CXXFLAGS src/converter.cc -o "$BUILD/converter"
+  SHA=$(sha256sum "$BUILD/pr" | cut -c1-16)
+  echo "=== $hostname ($ADDR)  -march=$M  sha=$SHA ===" >&2
   scp -q -o BatchMode=yes "$BUILD/pr" "$BUILD/converter" "$ADDR:/tmp/"
 
   ssh -o BatchMode=yes "$ADDR" TIER="$TIER" SCALE="$SCALE" TRIALS="$TRIALS" \
       GRAPHS="$GRAPHS" CPU="$CPU" OCC="$OCC" HOSTNAME_TAG="$hostname" \
-      MARCH="$MARCH" SHA="$SHA" 'bash -s' <<'REMOTE' >> "$CSV"
+      MARCH="$M" SHA="$SHA" 'bash -s' <<'REMOTE' >> "$CSV"
 set -uo pipefail
 GDIR="$HOME/code/gapbs/benchmark/graphs"
 WORK=/tmp/zenbench; mkdir -p $WORK
