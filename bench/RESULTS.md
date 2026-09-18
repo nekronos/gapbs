@@ -144,3 +144,48 @@ for the capacity argument in the campaign so far. Zen 4 never exceeds 32
 outstanding. With no spare capacity, prefetches do not fill headroom — they
 compete with demand loads for the same buffers and displace them. One change,
 +14% where there is capacity to spare and -19% where there is not.
+
+### 2 — prefetch temporal hint, swept at D=96 — REJECTED (null)
+
+`bench/results/iter2-hint{0,1,2,3}/`. `__builtin_prefetch`'s locality argument,
+verified distinct at the instruction level.
+
+| hint | instruction | kron avg_time_s |
+| --- | --- | ---: |
+| 0 | `prefetchnta` | 34.932 |
+| 1 | `prefetcht2` | **34.465** |
+| 2 | `prefetcht1` | 34.492 |
+| 3 | `prefetcht0` | 34.599 |
+
+Full spread **1.35%**, inside the 2% noise floor. NTA is nominally worst and T2
+nominally best, both by margins that are not distinguishable from noise. No
+change; T0 retained as the default.
+
+The hypothesis was that T0 would be a poor choice, since at D=96 the line is
+wanted 96 gather iterations later and the kernel streams a 9.8 GiB working set,
+so L1 eviction before use looked likely. Measurement says the level the prefetch
+targets does not matter here. The plausible reason is that the choice was never
+really between cache levels: the win is that the line is **in the machine at
+all** rather than being waited on, and once it is off the DRAM path, which level
+holds it costs a few cycles against a ~400-cycle miss. Consistent with the D
+sweep, where sensitivity to *distance* was enormous (16% between D=4 and D=96)
+and sensitivity to placement is nil.
+
+Counts as one of the three consecutive sub-threshold iterations in the primary
+stop rule. It does not indicate the prefetch lever is exhausted — only that this
+knob is not one. `pct_ge64` is 30.2%, so 70% of cycles remain below the
+demand-load ceiling.
+
+### 3 — flat CSR prefetch across vertex boundaries — in progress
+
+Motivated by a limitation of iteration 1 visible in the graph statistics: kron
+has **average degree 15.7** while the winning distance is **D=96**, so
+`last - first > D` is false for the large majority of vertices. Their main loop
+is empty and no prefetch fires at all — only high-degree hubs benefit. That the
+change still bought 14% says the hubs carry most of the edges; the low-degree
+tail is untouched.
+
+Prefetching `D` edges ahead through the flattened CSR neighbour array, ignoring
+vertex boundaries, covers every edge regardless of its vertex's degree. Clamped
+with a conditional move rather than a branch, since a branch between the
+independent loads is what costs the concurrency being bought.

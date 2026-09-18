@@ -1,0 +1,3 @@
+host,march,tier,graph,dist,hint,trials,iters,avg_time_s,min_trial_s,ns_per_edge_iter,speedup_vs_d0(0=no D0 in run)
+zen5,znver5,standard,kron,96,3,4,5,34.59898,34.48424,3.277,0.0000
+zen5,znver5,standard,urand,96,3,4,4,41.03748,41.02310,4.777,0.0000
