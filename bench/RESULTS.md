@@ -86,5 +86,61 @@ before any tier-B result is used to accept a change.
 
 ## Iterations
 
-| # | Change | Graph | cyc/edge/iter | Δ | MLP | ≥64 | Verdict | Label |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+### 1 — software prefetch in the gather, distance swept
+
+`src/pr.cc`: `-DPR_PREFETCH_DIST=D` prefetches `outgoing_contrib[*(p + D)]` while
+the gather consumes neighbour `p`. Loop split at `last - D` so no bounds test
+sits between the independent loads. `D=0` compiles to a `.text` byte-identical
+to the pristine source, so the control is real.
+
+**Distance sweep**, cycles only, g27, target
+(`bench/results/sweep-D-zen5-{standard,extended}/`):
+
+| D | 0 | 4 | 8 | 16 | 32 | 64 | **96** | 128 | 192 | 256 | 384 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| kron | 1.000 | 0.839 | 0.865 | 0.919 | 1.012 | 1.118 | **1.177** | 1.152 | 1.093 | 1.094 | 1.080 |
+| urand | 1.000 | 0.879 | 0.915 | 0.953 | 0.986 | 0.982 | 0.979 | 0.982 | 0.982 | 0.982 | 0.982 |
+
+Clean peak at **D=96** on kron. Small distances are actively harmful — D=4 is 16%
+*slower* than no prefetch, because the line is already in flight when the
+prefetch issues, so it buys nothing and consumes a miss-handling slot anyway.
+The optimum needs 96 neighbours of lookahead, which is what ~80-100 ns of DRAM
+latency costs against a gather consuming a neighbour every few cycles.
+
+**Counters at D=96** (`bench/results/iter1-D96/`):
+
+| | cyc/edge/iter | IPC | MLP | ≥32 | ≥64 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| zen5 kron, baseline | 21.088 | 0.545 | 35.66 | 63.3% | **0.0%** |
+| zen5 kron, D=96 | **18.097** | **0.823** | 27.92 | 66.6% | **30.2%** |
+| zen5 urand, baseline | 25.332 | 0.456 | 49.92 | 93.3% | 0.0% |
+| zen5 urand, D=96 | 26.037 | 0.458 | 48.67 | 91.2% | 0.0% |
+| zen4 kron, baseline | 39.322 | 0.294 | 15.85 | 0.0% | 0.0% |
+| zen4 kron, D=96 | 46.870 | 0.320 | 14.15 | 0.0% | 0.0% |
+
+**Verdict: accepted, Zen 5-specific.** kron -14.2% on the target. urand +2.8%,
+just outside the 2% floor, so this is a recorded trade rather than a flat
+second graph: urand already sustains 49.9 of the 64 demand slots at this scale
+and has no headroom for a prefetch to fill, so it pays the instruction cost for
+nothing.
+
+Three findings that outlast the number.
+
+**The load-queue bypass is real.** `pct_ge64` went from 0.0% to 30.2% — a level
+the kernel never reached once at baseline. Prefetch instructions are holding
+miss capacity without taking load-queue slots, which is what the 64-vs-124 split
+predicts and the first direct evidence of it here.
+
+**Mean MLP is the wrong success signal for prefetch, and it fell on a win.**
+35.66 to 27.92. Occupancy-cycles per edge-iteration went 752 to 505, a third
+lower, while cycles fell 14% and IPC rose 51%. The prefetches are converting
+demand misses into hits: the line arrives before the load issues, so the load
+never misses. Fewer misses outstanding on average, in deeper bursts. Read
+`pct_ge64` and IPC instead; the end condition's headroom rule is written against
+mean MLP and would have scored this change a failure.
+
+**Zen 4 regresses 19% on the same binary**, and that is the clearest evidence
+for the capacity argument in the campaign so far. Zen 4 never exceeds 32
+outstanding. With no spare capacity, prefetches do not fill headroom — they
+compete with demand loads for the same buffers and displace them. One change,
++14% where there is capacity to spare and -19% where there is not.

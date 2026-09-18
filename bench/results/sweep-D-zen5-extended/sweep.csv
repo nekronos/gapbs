@@ -1,0 +1,11 @@
+host,march,tier,graph,dist,hint,trials,iters,avg_time_s,min_trial_s,ns_per_edge_iter,speedup_vs_d0
+zen5,znver5,standard,kron,96,3,4,5,34.96727,34.76696,3.312,1.0000
+zen5,znver5,standard,urand,96,3,4,4,41.12277,41.11935,4.787,1.0000
+zen5,znver5,standard,kron,128,3,4,5,35.71276,35.67363,3.382,0.9791
+zen5,znver5,standard,urand,128,3,4,4,41.03617,41.02756,4.777,1.0021
+zen5,znver5,standard,kron,192,3,4,5,37.66367,37.59409,3.567,0.9284
+zen5,znver5,standard,urand,192,3,4,4,41.02443,41.01294,4.776,1.0024
+zen5,znver5,standard,kron,256,3,4,5,37.62115,37.59264,3.563,0.9295
+zen5,znver5,standard,urand,256,3,4,4,41.02530,41.02166,4.776,1.0024
+zen5,znver5,standard,kron,384,3,4,5,38.10400,38.01622,3.609,0.9177
+zen5,znver5,standard,urand,384,3,4,4,41.00706,41.00041,4.774,1.0028

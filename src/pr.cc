@@ -30,6 +30,13 @@ using namespace std;
 typedef float ScoreT;
 const float kDamp = 0.85;
 
+#ifndef PR_PREFETCH_DIST
+#define PR_PREFETCH_DIST 0
+#endif
+#ifndef PR_PREFETCH_HINT
+#define PR_PREFETCH_HINT 3
+#endif
+
 
 pvector<ScoreT> PageRankPullGS(const Graph &g, int max_iters, double epsilon=0,
                                bool logging_enabled = false) {
@@ -45,8 +52,24 @@ pvector<ScoreT> PageRankPullGS(const Graph &g, int max_iters, double epsilon=0,
     #pragma omp parallel for reduction(+ : error) schedule(dynamic, 16384)
     for (NodeID u=0; u < g.num_nodes(); u++) {
       ScoreT incoming_total = 0;
+#if PR_PREFETCH_DIST > 0
+      auto in_nb = g.in_neigh(u);
+      const NodeID *first = in_nb.begin();
+      const NodeID *last = in_nb.end();
+      const NodeID *main_end =
+          (last - first > PR_PREFETCH_DIST) ? last - PR_PREFETCH_DIST : first;
+      const NodeID *p = first;
+      for (; p < main_end; p++) {
+        __builtin_prefetch(&outgoing_contrib[*(p + PR_PREFETCH_DIST)], 0,
+                           PR_PREFETCH_HINT);
+        incoming_total += outgoing_contrib[*p];
+      }
+      for (; p < last; p++)
+        incoming_total += outgoing_contrib[*p];
+#else
       for (NodeID v : g.in_neigh(u))
         incoming_total += outgoing_contrib[v];
+#endif
       ScoreT old_score = scores[u];
       scores[u] = base_score + kDamp * incoming_total;
       error += fabs(scores[u] - old_score);
