@@ -21,8 +21,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ZEN4=user@reference-host          # Ryzen 9 7950X3D
-ZEN5=user@target-host       # Ryzen 9 9950X
+# Addresses live in bench/hosts.conf, which is gitignored -- see
+# hosts.conf.example. They are deliberately not in version control.
+HOSTS_CONF="$(dirname "$0")/hosts.conf"
+[[ -f $HOSTS_CONF ]] || { echo "missing $HOSTS_CONF -- copy hosts.conf.example" >&2; exit 2; }
+# shellcheck disable=SC1090
+source "$HOSTS_CONF"
+ZEN4=${ZEN4_HOST:?ZEN4_HOST unset}   # Ryzen 9 7950X3D
+ZEN5=${ZEN5_HOST:?ZEN5_HOST unset}   # Ryzen 9 9950X
 CPU=8                              # CCD1 on BOTH -> 32 MiB L3 each. Pinning Zen 4
                                    # to a V-Cache core (cpu 0-7/16-23, 96 MiB) would
                                    # confound the comparison with cache size.

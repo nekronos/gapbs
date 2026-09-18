@@ -1,3 +1,0 @@
-march,tier,graph,nodes,edges,iters,trials,avg_time_s,min_trial_s,cycles_per_edge_iter,ns_per_edge_iter,ipc,mlp_uncond,pct_cyc_miss,llc_mpki,branch_miss_rate
-native,quick,kron,4194302,64155725,6,16,1.65723,1.64334,17.264,4.305,0.667,7.967,99.1,3.12,0.03239
-native,quick,urand,4194304,67108579,4,16,1.20924,1.20755,18.038,4.505,0.642,9.656,99.2,4.19,0.02903

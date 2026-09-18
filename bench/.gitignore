@@ -1,4 +1,4 @@
-# Built artefacts and generated graphs are scratch; results are not.
 build/
 graphs/
 *.err
+hosts.conf

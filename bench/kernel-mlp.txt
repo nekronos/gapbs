@@ -1,0 +1,9 @@
+kernel     graph         mlp     ipc pct_miss sec_per_trial
+bfs        kron         1.00   0.684   45.2%      0.09900
+pr         kron         7.95   0.666   99.1%      1.66260
+pr_spmv    kron         8.00   0.651   99.2%      1.93461
+cc         kron         0.97   0.599   46.4%      0.13641
+cc_sv      kron         4.91   0.698   84.6%      1.30291
+bc         kron         4.43   0.744   94.0%      4.53123
+sssp       kron         5.21   0.798   95.2%      0.68896
+tc         kron         0.32   0.913   13.1%     65.50597

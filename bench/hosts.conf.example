@@ -1,0 +1,5 @@
+# Copy to bench/hosts.conf (gitignored) and fill in.
+# Kept out of the repository: a username plus a reachable address does not
+# belong in public history.
+ZEN5_HOST=user@target-host      # Zen 5 -- the optimisation target
+ZEN4_HOST=user@reference-host   # Zen 4 -- the reference

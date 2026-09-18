@@ -59,13 +59,16 @@ trusting them.
 
 ## The machines
 
+Addresses are set in `bench/hosts.conf`, which is not in version control; see
+`bench/hosts.conf.example`. Referred to below as `$ZEN5_HOST` and `$ZEN4_HOST`.
+
 Two single-socket desktop parts. Both run NixOS 26.11 (Zokor), kernel 6.18.41,
 SMT on, governor already `performance`, ~125 GiB RAM, 16 cores / 32 threads.
 
 | Role | Machine | CPU | L3 |
 | --- | --- | --- | --- |
-| **Target** — the only one optimised for | `user@target-host` | AMD Ryzen 9 9950X (Zen 5) | 64 MiB total, **32 MiB per CCD** |
-| **Reference** — separates Zen 5-specific gains from general ones | `user@reference-host` | AMD Ryzen 9 7950X3D (Zen 4) | 128 MiB total, **asymmetric** |
+| **Target** — the only one optimised for | `$ZEN5_HOST` | AMD Ryzen 9 9950X (Zen 5) | 64 MiB total, **32 MiB per CCD** |
+| **Reference** — separates Zen 5-specific gains from general ones | `$ZEN4_HOST` | AMD Ryzen 9 7950X3D (Zen 4) | 128 MiB total, **asymmetric** |
 
 The reference exists to *classify* a gain, not to gate it: a change that helps
 Zen 5 and not Zen 4 is a microarchitecture-specific gain, one that helps both is
@@ -529,8 +532,8 @@ Shipping a build to the two machines and pinning it there:
 
 ```
 sha256sum bench/build/<march>/pr                          # goes in the result row
-scp bench/build/<march>/{pr,converter} user@target-host:   # target, Zen 5
-scp bench/build/<march>/{pr,converter} user@reference-host:      # reference, Zen 4
+scp bench/build/<march>/{pr,converter} "$ZEN5_HOST":   # target, Zen 5
+scp bench/build/<march>/{pr,converter} "$ZEN4_HOST":      # reference, Zen 4
 
 ./converter -g24 -k16 -b kron-g24.sg    # once per machine; seeded, so identical everywhere
 
