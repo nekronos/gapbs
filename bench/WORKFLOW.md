@@ -14,13 +14,14 @@ For this workload specifically, the sections that decide what is worth trying:
   outstanding cache misses a core sustains (the Miss Address Buffers). PageRank
   is concurrency-limited, so this ceiling sets what any change can reach.
 - **Cache hierarchy and topology** — L1D/L2 per core and L3 per CCD. The tier
-  scales below are derived from cache size and must be recomputed for the
-  specific Zen 5 part.
+  scales below are derived from the L3 a single core can see — 32 MiB on the
+  target part; see "The machines".
 - **Hardware prefetchers** — which patterns they detect. Graph traversal defeats
   most of them; knowing which are active decides whether software prefetch is
   worth trying.
 - **Software prefetch guidance** — distance, which instruction form, and when
-  AMD says it hurts.
+  AMD says it hurts. This is the chapter the campaign turns on; "The lever"
+  below says why.
 - **TLB and large pages** — DTLB reach against the working set. At multi-GiB
   footprints page-walk traffic competes with the kernel for the same miss
   capacity.
@@ -33,29 +34,94 @@ Everything measured so far ran on an Intel Xeon Platinum 8558U (Emerald Rapids).
 Three things do not carry over and must be re-established on the target part
 before any Zen 5 result is trusted:
 
-- **Tier scales.** The ladder below is sized against a 260 MiB L3. Zen 5 L3 is
-  per-CCD and a different size; recompute the working-set multiples.
+- **Tier scales.** The ladder was first sized against a 260 MiB L3. It is
+  recomputed below against the 32 MiB a single core sees on both AMD machines
+  under the fair pinning; the multiples changed, the tier assignments did not.
 - **Counters.** `L1D_PEND_MISS.PENDING` and `.PENDING_CYCLES` are Intel events.
   The AMD equivalent for outstanding-miss occupancy is a Miss Address Buffer
   event (`ls_alloc_mab_count` on recent parts); confirm the name against the PPR
   for the exact model, and validate it by construction — a true occupancy
   counter reads ~1 at one outstanding miss and ~8 at eight, not an allocation
-  rate.
-- **Noise floor.** Re-measure it; do not carry the Intel figure over.
+  rate. Still to do, on both machines.
+- **Noise floor.** Re-measure it on each machine; do not carry the Intel figure
+  over. Still to do.
 
-Until a Zen 5 machine is in the loop, results here are Intel numbers that
-exercise the harness. They are not the campaign.
+The machines are now in the loop (next section). The numbers already in this
+document — the reference baseline, the noise floor, the tier costs — are Intel
+numbers that exercised the harness. They are not the campaign.
 
 How to change PageRank and know whether it actually got faster, on one
 microarchitecture, without being fooled by a cheap measurement.
 
-Everything below was calibrated on the machine in `bench/results/*/provenance.txt`;
-re-derive the numbers on a different part before trusting them.
+Everything below was calibrated on the machine in `bench/results/*/provenance.txt`
+unless a section says otherwise; re-derive the numbers on a different part before
+trusting them.
+
+## The machines
+
+Two single-socket desktop parts. Both run NixOS 26.11 (Zokor), kernel 6.18.41,
+SMT on, governor already `performance`, ~125 GiB RAM, 16 cores / 32 threads.
+
+| Role | Machine | CPU | L3 |
+| --- | --- | --- | --- |
+| **Target** — the only one optimised for | `user@target-host` | AMD Ryzen 9 9950X (Zen 5) | 64 MiB total, **32 MiB per CCD** |
+| **Reference** — separates Zen 5-specific gains from general ones | `user@reference-host` | AMD Ryzen 9 7950X3D (Zen 4) | 128 MiB total, **asymmetric** |
+
+The reference exists to *classify* a gain, not to gate it: a change that helps
+Zen 5 and not Zen 4 is a microarchitecture-specific gain, one that helps both is
+general. Either is accepted on the target's numbers alone — "End condition" has
+the rule.
+
+### CCD topology, and the trap in it
+
+A core sees only its own CCD's L3. The two parts differ here, and the difference
+is silent:
+
+| Part | CCD0 (cpus 0-7, 16-23) | CCD1 (cpus 8-15, 24-31) |
+| --- | --- | --- |
+| Zen 5 9950X | 32 MiB | 32 MiB |
+| Zen 4 7950X3D | **96 MiB** (3D V-Cache) | 32 MiB |
+
+Pinned to a Zen 4 V-Cache core, the reference compares 96 MiB of L3 against the
+target's 32 MiB, and "Zen 5 vs Zen 4" is confounded with "32 MiB vs 96 MiB of
+cache". Nothing errors; the working-set multiples in the tier ladder are simply
+a third of what the table says.
+
+**The fair reference pinning is Zen 4 CCD1 — `taskset -c 8` — matching the
+32 MiB a Zen 5 core sees.** On Zen 5 the CCDs are uniform, so any core sees 32 MiB; **cpu 8 is used there too**, so a single pinning applies to both machines and the runner needs no per-host special case. This keeps the
+existing convention. Pinning to a V-Cache core is a separate, deliberate
+experiment (what does 3x the L3 buy this kernel?), never the default. Every
+result records which CCD it was pinned to; a row without that is not comparable
+to anything.
+
+### Toolchain: build once, ship the binary
+
+Neither machine has clang, gcc, perf or numactl installed. Consequences:
+
+- **Build centrally, ship binaries.** `shell.nix` in the repo root gives the
+  build host its compiler; compile once there and `scp` the same binary to both
+  machines. That is the point, not a workaround: the byte-identical binary on
+  two parts isolates microarchitecture from code generation. Record the binary's
+  checksum with the result. Ship `converter` alongside `pr` and generate the
+  graphs on each machine — the generator is seeded (`kRandSeed`), so the same
+  binary produces the same graph everywhere, and g27 is too large to copy
+  around.
+- **perf cannot be shipped** — it is coupled to the running kernel. Get it on
+  each machine as needed: `nix-shell -p linuxPackages.perf --run '...'`
+  (perf 7.1.5 on both).
+- **numactl is absent and not needed.** Single socket, one memory node: there is
+  nothing for `--membind` to choose, and `taskset` pinning alone is sufficient.
+  `taskset` is present on both.
+
+The driver compiles in place and wraps every run in `numactl --membind`; on
+these machines it needs a prebuilt-binary path and the `numactl` wrapper dropped
+before the recipes in "Commands" run as written.
 
 ## What is measured
 
-**One core.** Serial build, no OpenMP, pinned with `taskset`, memory bound to one
-NUMA node. Thread scheduling noise is larger than most microarchitectural effects,
+**One core.** Serial build, no OpenMP, pinned with `taskset` to one core on a
+recorded CCD (single socket, so there is no NUMA node to bind). Thread scheduling
+noise is larger than most microarchitectural effects,
 and a loaded socket is memory-system-bound rather than core-bound, so the core is
 measured alone.
 
@@ -87,19 +153,30 @@ bottom past the point where the answer matters.
 | **D** | twitter / web / road | + ~275 GB download | Does it hold on real graphs? |
 
 Scale matters because the working set has to clear the last-level cache by enough
-that the kernel is genuinely in DRAM:
+that the kernel is genuinely in DRAM. The L3 that matters is the one the pinned
+core can see: 32 MiB on both machines under the fair pinning ("The machines"),
+96 MiB on the Zen 4 V-Cache CCD if that experiment is run.
 
 ```
-L3 = 260 MiB = 0.254 GiB on this machine
+per-core visible L3:  32 MiB = 0.03125 GiB   Zen 5, either CCD; Zen 4 CCD1
+                      96 MiB = 0.09375 GiB   Zen 4 CCD0 (V-Cache) -- not the default
 
-  g22   0.30 GiB working set  ->  1.2x L3   too small: partly cache-resident
-  g24   1.25 GiB              ->  4.9x L3   fast tier
-  g25   2.50 GiB              ->  9.8x L3   fall back here if g24 mis-ranks
-  g27   9.82 GiB              -> 38.7x L3   GAPBS standard
+  working set (CSR + PageRank arrays)     32 MiB    96 MiB
+  g22   0.30 GiB                            9.6x      3.2x
+  g24   1.25 GiB                           40x       13.3x   fast tier
+  g25   2.50 GiB                           80x       26.7x   fall back here if g24 mis-ranks
+  g27   9.82 GiB                          314x      105x     GAPBS standard
 ```
 
-At 1.2x L3 a locality-improving change is flattered and a change that only pays at
-real DRAM depth is penalised. Start at g24.
+The earlier worry that g22 was partly cache-resident was a 260 MiB Intel L3
+problem (1.2x); at 9.6x of a 32 MiB L3 it does not apply here. g24 stays the fast
+tier anyway: it also clears the Zen 4 V-Cache CCD's 96 MiB by ~13x, so one tier
+serves both the default pinning and the V-Cache experiment, where g22 at 3.2x
+would be back in the regime that flatters a locality-improving change and
+penalises one that only pays at real DRAM depth. Start at g24.
+
+The costs in the table were timed on the Intel machine; re-time them on the
+target before planning a campaign around them.
 
 **Keep both synthetic graphs from tier B up.** They behave differently — `kron`'s
 power-law degree distribution gives hub locality and lower achieved concurrency;
@@ -111,7 +188,50 @@ distributions that `kron` only approximates and `urand` not at all. A change tun
 on synthetic data can fail there. It is a pre-publication check, not an iteration
 check.
 
+## The lever: software prefetch and the miss-handling budget
+
+PageRank at these scales spends ~99% of its cycles with a miss outstanding
+("Reference baseline"), so the quantity being bought is misses in flight, and
+the ceiling on that is the core's miss-handling budget. On Zen 5 the budget has
+two parts:
+
+| | Outstanding misses | Reached by |
+| --- | --- | --- |
+| Total the core can sustain | **124** | demand loads and software prefetch together |
+| Reachable by demand loads alone | **64** | every in-flight demand load holds a load-queue slot |
+| Reachable only by software prefetch | the remaining 60 | prefetch instructions take no load-queue slot |
+| PageRank today | **~8** (`kron`) to ~10 (`urand`) | measured on Intel; re-measure on Zen 5 before anything else |
+
+Against a 124 ceiling, ~8 in flight is a very large headroom gap — and the
+demand-load path, which is all that ordinary code changes (unrolling, layout,
+`-march`) can work on, caps out at 64. Everything above that is reachable only
+through software prefetch instructions. That makes **software prefetching the
+primary lever of this campaign, not a micro-optimisation**: it is the only way
+past the load-queue limit, and the budget it unlocks is about as large as the
+one demand loads can use at all.
+
+Before writing the first prefetch, study the load-optimisation chapter of AMD
+doc 58455 — specifically its prefetch guidance: prefetch distance (how far ahead
+of the consuming load to issue, and what that depends on), which instruction
+form to use, and the cases where AMD says prefetching hurts. The indirect gather
+of neighbour contributions through the CSR index is the access the hardware
+prefetchers cannot follow (see the prefetchers bullet under "Target
+microarchitecture"); that is where the headroom is. The sequential CSR walk
+itself is not.
+
+**Measurement consequence.** Achieved MLP — outstanding misses per cycle with a
+miss, from the validated occupancy counter — is the *leading indicator*: a
+prefetch change that worked raises it, and one that did not (wrong distance,
+prefetches dropped, lines evicted before use) leaves it flat or lowers it.
+`cycles_per_edge_iter` is the *outcome*. Read both at tier B, in that order: MLP
+says whether the mechanism engaged, cycles say whether it paid. A cycles gain
+with flat MLP came from somewhere else and should be understood before it is
+kept.
+
 ## The loop
+
+Every step runs on the target (Zen 5) first. The reference (Zen 4, CCD1) sees
+the same binary at step 5, to classify the result.
 
 1. **Baseline first, on the tier you are about to use.** Record it. A delta against
    a remembered number is not a measurement.
@@ -120,12 +240,78 @@ check.
    change bigger or stop.
 4. **Tier B** when tier A says something moved. The counters say whether it moved
    for the reason you think: a change that was supposed to raise memory-level
-   parallelism and instead raised IPC did something else.
-5. **Tier C at checkpoints** — before landing, before claiming, and whenever tier B
+   parallelism and instead raised IPC did something else. For a prefetch change,
+   achieved MLP is that check ("The lever").
+5. **Same binary on the reference**, tier B. Zen 4 up: the gain is general. Zen 4
+   flat or down: it is Zen 5-specific. The decision was already made at step 4;
+   this step labels it.
+6. **Accept or reject** by the rule in "End condition", then check the stopping
+   rule there.
+7. **Tier C at checkpoints** — before landing, before claiming, and whenever tier B
    and your model disagree.
-6. **Record the result either way.** A change that did not work is worth one line
-   saying what was tried and what it measured, at the place someone would try it
-   again. That line is cheaper than repeating the experiment.
+8. **Record the result either way**, with the CCD it was pinned to and the
+   binary's checksum. A change that did not work is worth one line saying what
+   was tried and what it measured, at the place someone would try it again. That
+   line is cheaper than repeating the experiment.
+
+## End condition
+
+The loop has a stopping rule, written down before iteration 1, so it does not
+run until someone loses interest. Four parts: the first two are the real ones,
+the third is the backstop, the fourth is what each iteration is judged by.
+
+**1. Headroom (primary).** Achieved MLP on Zen 5 is the thing being bought. Stop
+when either
+
+- two consecutive *accepted* changes each added less than ~5% to achieved MLP —
+  the lever has stopped moving the mechanism, whatever the cycles say; or
+- achieved MLP is within ~20% of the ceiling that applies to the technique in
+  use: 64 for demand loads alone, 124 once software prefetch is carrying misses.
+  Past that point the remaining gap is the miss-handling budget itself, and the
+  next lever is a different one (working-set reduction, TLB reach) — a new
+  campaign with its own baseline, not another iteration of this one.
+
+**2. Diminishing returns (secondary).** Stop when three consecutive iterations —
+accepted or rejected — each moved `cycles_per_edge_iter` by less than 2% on the
+target. 2% is the noise floor as currently measured, so below it nothing is
+distinguishable from noise anyway; if the Zen 5 re-measurement moves the floor,
+this threshold moves with it. Three in a row rather than one, because a single
+flat iteration is usually a bad idea rather than an exhausted lever.
+
+**3. Hard caps.** So the loop terminates even if neither of the above trips:
+
+| Cap | Value | Counts |
+| --- | --- | --- |
+| Iterations | 24 | every change tried, accepted or rejected |
+| Wall clock | 10 working days from the first Zen 5 baseline | calendar time, including baselines, noise-floor and fast-tier validation |
+
+Whichever trips first ends the loop. The values are set at campaign start and
+recorded alongside the baseline; they change between campaigns, never mid-loop,
+because a cap that moves when it is about to trip is not a cap.
+
+**4. Per-iteration accept/reject.** A change is accepted only if it beats the
+noise floor on the target machine at tier B: `cycles_per_edge_iter` down by more
+than the floor on both synthetic graphs, or on one with the other flat. A change
+that trades `kron` against `urand` is not accepted without a written reason. The
+reference machine does not vote:
+
+| Zen 5 (target) | Zen 4 (reference, CCD1) | Verdict | Label |
+| --- | --- | --- | --- |
+| better | better | accepted | *general* |
+| better | flat or **worse** | accepted | *Zen 5-specific* |
+| flat or worse | anything | rejected | — |
+
+The second row is the one to be deliberate about. It still lands — Zen 5 is the
+only target — but the label is what says the gain came from the
+microarchitecture (its miss budget, its prefetch handling) rather than from the
+code being better in general, and a later reader needs that to know whether to
+expect it anywhere else. The Zen 4 reference exists to *classify* gains, not to
+gate them; gating on it would optimise for the average of two parts, and the
+campaign has one target.
+
+When the loop ends, the last accepted binary goes through tier C on both
+machines and that row is the number of record. The criterion that tripped, and
+the values it tripped at, are written into the results log next to it.
 
 ## Validating the fast tier
 
@@ -134,7 +320,9 @@ A fast tier is only valid if it ranks changes the same way the slow tier does.
 
 Take two or three builds known to differ — `-O2` against `-O3`, or two `-march`
 values — and confirm g24 orders them the same as g27. If the ordering disagrees,
-move the fast tier to g25 and re-check.
+move the fast tier to g25 and re-check. Do this on the target, under the fair
+pinning; the Intel validation does not carry over, and it counts against the
+wall-clock cap.
 
 This is the step that gets skipped, and skipping it means every subsequent
 iteration is fast and possibly wrong.
@@ -142,16 +330,25 @@ iteration is fast and possibly wrong.
 ## Measurement identity
 
 A number is comparable only to one taken with the byte-identical command, on the
-same machine, in the same state. The driver stamps each run with compiler version,
-flags, commit (marked DIRTY if the tree is not clean), CPU model, governor, THP
-setting, SMT state and pinning. Before comparing two rows, diff their
-`provenance.txt`.
+same machine, on the same CCD, in the same state. The driver stamps each run with
+compiler version, flags, commit (marked DIRTY if the tree is not clean), CPU
+model, governor, THP setting, SMT state and pinning. Before comparing two rows,
+diff their `provenance.txt`.
 
-**Set the governor before any A/B.** At `powersave` the frequency drifts between
-runs and a small delta may be governor noise rather than the change:
+The shipped-binary setup adds two things to the identity. The compiler fields
+describe the build host, not the measuring machine, so they travel with the
+binary; and the binary's checksum is what ties a Zen 5 row to its Zen 4 row —
+two rows with different checksums are two experiments, not one comparison. The
+pinned cpu is already stamped; on Zen 4 read it as a CCD (cpus 8-15 and 24-31
+are the 32 MiB CCD) and treat a row from the other CCD as a different machine.
+
+**Check the governor before any A/B.** Both machines are already at
+`performance`; the check stays because at `powersave` the frequency drifts
+between runs and a small delta may be governor noise rather than the change:
 
 ```
-sudo cpupower -c 1 frequency-set -g performance
+cat /sys/devices/system/cpu/cpu1/cpufreq/scaling_governor
+sudo cpupower -c 1 frequency-set -g performance    # only if it is not
 ```
 
 The driver warns when the governor is not `performance`, but does not change it —
@@ -160,20 +357,27 @@ anything in the record saying so.
 
 ## Noise floor
 
-Measured run-to-run on this machine at `powersave`, same binary, same graph:
+Measured run-to-run on the Intel machine at `powersave`, same binary, same graph:
 
 - `cycles_per_edge_iter` ~1.4%
 - achieved MLP ~1%
 
 **A delta under ~2% is not a result** until the governor is fixed and the run
 repeated. Re-establish this floor after any change to machine state, and after
-moving to a different tier.
+moving to a different tier — and once per machine before the campaign. The 2%
+that the accept rule and the diminishing-returns stop in "End condition" both use
+is this figure, and it is owed a Zen 5 measurement at `performance` under the
+fair pinning before either rule is applied.
 
 ## Hazards
 
 Each of these produces a confident, wrong number rather than an error.
 
 - **Graph too small.** Covered above. The failure is silent and directional.
+- **Wrong CCD on the reference.** Pinned to a Zen 4 V-Cache core the working set
+  sees 96 MiB of L3, not 32 MiB, and every tier multiple is a third of what the
+  ladder says. Nothing errors. `taskset -c 8` is the default; a V-Cache row is
+  labelled as the experiment it is.
 - **Governor drift.** Wallclock moves, cycles do not — which is why cycles are the
   primary series.
 - **File targets do not re-run.** Upstream's `benchmark/out/*.out` are ordinary make
@@ -191,11 +395,24 @@ Each of these produces a confident, wrong number rather than an error.
   will either error or, worse, resolve to a similarly-named event measuring
   something else. Validate any occupancy counter by construction before quoting
   a number from it.
+- **Different binaries on the two machines.** A binary compiled on each machine
+  (`-march=native` resolves to a different target on each) compares code
+  generation as well as microarchitecture. Ship one binary; check the checksum
+  in both rows.
+- **A `-march` the reference cannot execute.** Zen 5 is an ISA superset of Zen 4,
+  so a `-march=znver5` binary may fault on the 7950X3D with an illegal
+  instruction. The shipped binary is built for what both parts run —
+  `-march=znver4` is the natural choice; a `znver5` build measures on the target
+  only, and its Zen 4 row is blank, not zero.
+- **perf from elsewhere.** perf is built against the running kernel; a copy from
+  another machine may fail to open events, or lack this kernel's event tables.
+  Use the `nix-shell` invocation on the measuring machine.
 
 ## Reference baseline
 
-`-march=native`, serial, cpu 1, node 0, `powersave`, g22 (the tier since superseded
-by g24 — kept as the first datapoint, not as a target):
+Intel Xeon Platinum 8558U, `-march=native`, serial, cpu 1, node 0, `powersave`,
+g22 (the tier since superseded by g24 — kept as the first datapoint, not as a
+target). The Zen 5 and Zen 4 CCD1 baselines replace this table once they exist:
 
 | graph | edges | iters | cycles/edge/iter | IPC | MLP | % cyc w/ miss | LLC MPKI |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -204,8 +421,11 @@ by g24 — kept as the first datapoint, not as a target):
 
 Both kernels spend ~99% of cycles with at least one miss outstanding: PageRank at
 this scale is memory-bound, and the lever is concurrency, not instruction count.
+The MLP column is the ~8 that "The lever" sets against a budget of 124.
 
 ## Commands
+
+On the build host (`nix-shell` in the repo root):
 
 ```
 just pagerank-one <march> kron 5      # tier A
@@ -215,3 +435,22 @@ just pagerank-matrix "<march> ..."    # build matrix
 just pagerank-summary                 # every result so far
 bench/mlp-by-kernel.sh                # achieved MLP across all GAPBS kernels
 ```
+
+Shipping a build to the two machines and pinning it there:
+
+```
+sha256sum bench/build/<march>/pr                          # goes in the result row
+scp bench/build/<march>/{pr,converter} user@target-host:   # target, Zen 5
+scp bench/build/<march>/{pr,converter} user@reference-host:      # reference, Zen 4
+
+./converter -g24 -k16 -b kron-g24.sg    # once per machine; seeded, so identical everywhere
+
+# target: cpu 8 -- CCDs are uniform on Zen 5, so this matches the reference pinning
+nix-shell -p linuxPackages.perf --run 'perf stat -e <events> -- taskset -c 8 ./pr -f kron-g24.sg ...'
+# reference: cpu 8 -- CCD1, the 32 MiB one. cpus 0-7 / 16-23 are the 96 MiB V-Cache CCD.
+nix-shell -p linuxPackages.perf --run 'perf stat -e <events> -- taskset -c 8 ./pr -f kron-g24.sg ...'
+```
+
+The `just` recipes assume a local compiler and `numactl`, which the two machines
+do not have; until the driver grows a prebuilt-binary mode they are build-host
+commands and the measurement side is the block above.

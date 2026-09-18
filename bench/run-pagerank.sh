@@ -35,7 +35,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case $TIER in
-  quick)    SCALE=22 ;;   # 4M vertices  -- seconds per run, for the edit loop
+  quick)    SCALE=24 ;;   # 16.8M vertices -- clears 32 MiB L3 by ~40x, and the
+                          # Zen 4 96 MiB V-Cache CCD by ~13x. g22 was sized for a
+                          # 260 MiB Intel L3 and is only 1.2x there.
   standard) SCALE=27 ;;   # 134M vertices -- GAPBS's own benchmark scale
   *) echo "unknown tier: $TIER (quick|standard)" >&2; exit 2 ;;
 esac
