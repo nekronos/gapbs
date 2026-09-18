@@ -351,7 +351,11 @@ the third is the backstop, the fourth is what each iteration is judged by.
 **1. Headroom (primary).** Achieved MLP on Zen 5 is the thing being bought. Stop
 when either
 
-- two consecutive *accepted* changes each added less than ~5% to achieved MLP —
+- two consecutive *accepted* changes each added less than **10%** to achieved
+  MLP — raised from 5% because measured MLP noise on `kron` is 4.1%
+  peak-to-peak, so a 5% rule would fire on noise. MLP is a ratio of two
+  setup-subtracted counters, so its errors compound and it is noisier than
+  `cycles_per_edge_iter` —
   the lever has stopped moving the mechanism, whatever the cycles say; or
 - achieved MLP is within ~20% of the ceiling that applies to the technique in
   use: 64 for demand loads alone, 124 once software prefetch is carrying misses.

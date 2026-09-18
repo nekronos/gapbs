@@ -20,6 +20,22 @@ Append-only. Every row here is reproducible from the CSV named beside it in
 | NixOS has no generic dynamic loader | binaries must be static; a dynamic one exits 127 and perf reports counters for the failed exec without complaint |
 | Standard g27 graph set already present on both machines | tier C needs no generation |
 
+## Noise floor (target, tier B, 3 repeats of one binary)
+
+`bench/results/noise-r{1,2,3}/`, sha `f2ae9737a0268784`, clang 22.1.8.
+
+| metric | kron | urand | threshold adopted |
+| --- | --- | --- | --- |
+| `cycles_per_edge_iter` | 0.72% | 1.80% | **2%** — a change must beat this to be accepted |
+| `mlp` | **4.10%** | 1.69% | **10%** for the headroom stop rule |
+
+The cycles threshold matches the figure carried over from Intel, so 2% stands.
+The MLP threshold does not: the end condition originally stopped when two
+consecutive changes each added under 5% to MLP, which is inside kron's 4.1%
+noise. Raised to 10%. MLP is a ratio of two setup-subtracted counters and its
+errors compound, so it is the noisier of the two signals despite being the one
+the campaign is buying.
+
 ## Baseline
 
 *(pending — tier C, both machines, both graphs, no code changes)*
