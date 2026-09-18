@@ -1,5 +1,51 @@
 # PageRank performance iteration workflow
 
+## Target microarchitecture: AMD Zen 5
+
+**Read the optimization guide before changing code.** Software Optimization
+Guide for the AMD Zen5 Microarchitecture, AMD doc **58455** rev 1.00 — see
+`docs/README.md` for where to get it. Optimising a memory-bound kernel against
+a guessed machine model wastes whole measurement cycles; the guide is a few
+hours and it is the cheapest input to this campaign.
+
+For this workload specifically, the sections that decide what is worth trying:
+
+- **Load/store unit** — loads per cycle, store queue depth, and how many
+  outstanding cache misses a core sustains (the Miss Address Buffers). PageRank
+  is concurrency-limited, so this ceiling sets what any change can reach.
+- **Cache hierarchy and topology** — L1D/L2 per core and L3 per CCD. The tier
+  scales below are derived from cache size and must be recomputed for the
+  specific Zen 5 part.
+- **Hardware prefetchers** — which patterns they detect. Graph traversal defeats
+  most of them; knowing which are active decides whether software prefetch is
+  worth trying.
+- **Software prefetch guidance** — distance, which instruction form, and when
+  AMD says it hurts.
+- **TLB and large pages** — DTLB reach against the working set. At multi-GiB
+  footprints page-walk traffic competes with the kernel for the same miss
+  capacity.
+- **Instruction latency and throughput tables** — for reading a disassembly
+  diff, not for driving the change.
+
+### The baselines in this document are Intel, not Zen 5
+
+Everything measured so far ran on an Intel Xeon Platinum 8558U (Emerald Rapids).
+Three things do not carry over and must be re-established on the target part
+before any Zen 5 result is trusted:
+
+- **Tier scales.** The ladder below is sized against a 260 MiB L3. Zen 5 L3 is
+  per-CCD and a different size; recompute the working-set multiples.
+- **Counters.** `L1D_PEND_MISS.PENDING` and `.PENDING_CYCLES` are Intel events.
+  The AMD equivalent for outstanding-miss occupancy is a Miss Address Buffer
+  event (`ls_alloc_mab_count` on recent parts); confirm the name against the PPR
+  for the exact model, and validate it by construction — a true occupancy
+  counter reads ~1 at one outstanding miss and ~8 at eight, not an allocation
+  rate.
+- **Noise floor.** Re-measure it; do not carry the Intel figure over.
+
+Until a Zen 5 machine is in the loop, results here are Intel numbers that
+exercise the harness. They are not the campaign.
+
 How to change PageRank and know whether it actually got faster, on one
 microarchitecture, without being fooled by a cheap measurement.
 
@@ -141,6 +187,10 @@ Each of these produces a confident, wrong number rather than an error.
   not by accident.
 - **A dirty tree.** Provenance marks it. A number from a dirty tree cannot be
   reproduced.
+- **Counters differ by vendor.** The driver's event names are Intel. On AMD they
+  will either error or, worse, resolve to a similarly-named event measuring
+  something else. Validate any occupancy counter by construction before quoting
+  a number from it.
 
 ## Reference baseline
 
