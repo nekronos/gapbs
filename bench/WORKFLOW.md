@@ -280,7 +280,27 @@ have left the main lever untried.
 
 ### 1. Software prefetch, carefully placed (required)
 
-Pull-direction PageRank gathers `scores[v]` for every in-neighbour `v` of `u`.
+`Neighborhood::iterator` is a raw `NodeID*`, so the neighbour list is directly
+indexable and the lookahead needs no container gymnastics:
+
+```cpp
+auto nb = g.in_neigh(u);
+const NodeID *first = nb.begin(), *last = nb.end();
+for (const NodeID *p = first; p < last; ++p)
+  incoming_total += outgoing_contrib[*p];          // the random gather
+```
+
+Two implementation notes. **Sweep `D` by rebuilding, not by branching** — pass
+it as `-DPR_PREFETCH_DIST=N` so the compiler sees a constant and `N=0` compiles
+back to the unmodified loop, which keeps the baseline honest. And **split the
+loop rather than bounds-checking inside it**: a `p + D < last` test in the
+gather adds a branch between the independent loads, which is the one thing
+measured to cost achieved MLP. Run the main body to `last - D` and handle the
+tail separately.
+
+Pull-direction PageRank gathers `outgoing_contrib[v]` for every in-neighbour
+`v` of `u` (not `scores[]` — `scores[u]` is written sequentially in `u` and
+streams).
 The neighbour list is contiguous, so the addresses of future gathers are
 readable well before the gathers themselves issue. That is the property
 prefetching needs, and it is why this kernel is a good fit for the technique.
@@ -288,7 +308,8 @@ prefetching needs, and it is why this kernel is a good fit for the technique.
 Two distinct sites, to be tested separately before being combined:
 
 - **Within a vertex.** While processing neighbour `i`, prefetch
-  `scores[neigh[i + D]]`. `D` is the prefetch distance and is the primary knob:
+  `outgoing_contrib[neigh[i + D]]`. `D` is the prefetch distance and the primary
+  knob:
   too short and the line has not arrived, too long and it is evicted or the
   prefetch is wasted on a vertex whose scan ends first. Sweep `D`; do not guess
   it. Short neighbour lists are the hazard — a power-law graph like `kron` has
@@ -299,7 +320,7 @@ Two distinct sites, to be tested separately before being combined:
 
 Variants that need measuring rather than assuming: the temporal hint
 (`_mm_prefetch` `_MM_HINT_T0/T1/T2/NTA`), whether prefetching the offsets array
-pays separately from the scores array, and whether a prefetch issued for an
+pays separately from the contribution array, and whether a prefetch issued for an
 already-resident line costs more than it saves. Consult doc 58455's
 load-optimisation chapter for AMD's guidance on form, distance and the cases
 where it says prefetching hurts — then measure, because the guide describes the
