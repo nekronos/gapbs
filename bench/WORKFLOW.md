@@ -410,6 +410,15 @@ the values it tripped at, are written into the results log next to it.
 
 ## Validating the fast tier
 
+> **Measured, 2026-09-18: g24 fails this check.** The same binary sustains
+> MLP 16.0 on kron at g24 and 35.7 at g27 — less than half the concurrency,
+> despite g24 clearing L3 by 40x and being memory-bound on 99% of cycles.
+> Working-set multiples predict whether a kernel is memory-bound, not how much
+> concurrency is available to it. Move the fast tier to g25 or above and redo
+> the ranking check against g27 before trusting a tier-B accept.
+
+
+
 A fast tier is only valid if it ranks changes the same way the slow tier does.
 **Check this once, before the campaign, not per iteration.**
 
