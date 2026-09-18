@@ -271,6 +271,56 @@ the same binary at step 5, to classify the result.
    was tried and what it measured, at the place someone would try it again. That
    line is cheaper than repeating the experiment.
 
+## Approaches to test
+
+Ordered by how directly they attack the miss-handling budget. **Software
+prefetch is required, not optional** — it is the only technique that reaches
+past the 64-slot demand-load ceiling, so a campaign that did not test it would
+have left the main lever untried.
+
+### 1. Software prefetch, carefully placed (required)
+
+Pull-direction PageRank gathers `scores[v]` for every in-neighbour `v` of `u`.
+The neighbour list is contiguous, so the addresses of future gathers are
+readable well before the gathers themselves issue. That is the property
+prefetching needs, and it is why this kernel is a good fit for the technique.
+
+Two distinct sites, to be tested separately before being combined:
+
+- **Within a vertex.** While processing neighbour `i`, prefetch
+  `scores[neigh[i + D]]`. `D` is the prefetch distance and is the primary knob:
+  too short and the line has not arrived, too long and it is evicted or the
+  prefetch is wasted on a vertex whose scan ends first. Sweep `D`; do not guess
+  it. Short neighbour lists are the hazard — a power-law graph like `kron` has
+  many vertices with fewer than `D` neighbours, where every prefetch is waste.
+- **Across vertices.** While processing `u`, prefetch the head of `u+1`'s
+  neighbour list and its offset entry, so the next vertex's scan does not begin
+  with a cold miss.
+
+Variants that need measuring rather than assuming: the temporal hint
+(`_mm_prefetch` `_MM_HINT_T0/T1/T2/NTA`), whether prefetching the offsets array
+pays separately from the scores array, and whether a prefetch issued for an
+already-resident line costs more than it saves. Consult doc 58455's
+load-optimisation chapter for AMD's guidance on form, distance and the cases
+where it says prefetching hurts — then measure, because the guide describes the
+machine, not this access pattern.
+
+The measurement signature of a prefetch that worked: achieved MLP rises while
+`cycles_per_edge_iter` falls. MLP rising with cycles flat means the prefetches
+are issuing but not covering demand misses — wrong distance, or the wrong lines.
+
+### 2. Data layout and working-set reduction
+
+Narrowing the score type, reordering vertices for locality, or blocking the scan
+so a slice of `scores[]` stays resident. These reduce the misses rather than
+overlapping them, so they compose with prefetching rather than competing.
+
+### 3. Loop structure
+
+Unrolling or interleaving several vertices' gathers to expose more independent
+misses to the demand path. This is capped by the 64-slot load queue, which is
+precisely why it cannot substitute for prefetching.
+
 ## End condition
 
 The loop has a stopping rule, written down before iteration 1, so it does not
