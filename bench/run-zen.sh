@@ -59,9 +59,12 @@ for hostname in $HOSTS; do
   echo "=== $hostname ($ADDR)  -march=$M  sha=$SHA ===" >&2
   scp -q -o BatchMode=yes "$BUILD/pr" "$BUILD/converter" "$ADDR:/tmp/"
 
-  ssh -o BatchMode=yes "$ADDR" TIER="$TIER" SCALE="$SCALE" TRIALS="$TRIALS" \
-      GRAPHS="$GRAPHS" CPU="$CPU" OCC="$OCC" HOSTNAME_TAG="$hostname" \
-      MARCH="$M" SHA="$SHA" 'bash -s' <<'REMOTE' >> "$CSV"
+  # ssh flattens its arguments into one string for the remote shell, so a value
+  # containing a space (GRAPHS="kron urand") splits and the second word is run
+  # as a command. Quote each assignment for the remote shell explicitly.
+  ssh -o BatchMode=yes "$ADDR" \
+      "TIER='$TIER' SCALE='$SCALE' TRIALS='$TRIALS' GRAPHS='$GRAPHS' CPU='$CPU' \
+       OCC='$OCC' HOSTNAME_TAG='$hostname' MARCH='$M' SHA='$SHA' bash -s" <<'REMOTE' >> "$CSV"
 set -uo pipefail
 GDIR="$HOME/code/gapbs/benchmark/graphs"
 WORK=/tmp/zenbench; mkdir -p $WORK
