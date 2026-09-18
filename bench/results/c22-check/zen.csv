@@ -1,0 +1,2 @@
+host,cpu,march,sha,tier,graph,nodes,edges,iters,trials,avg_time_s,min_trial_s,cycles_per_edge_iter,ipc,mlp,mlp_cond,pct_cyc_miss,pct_ge16,pct_ge32,pct_ge64
+zen5,8,znver5,f2ae9737a0268784,quick,kron,16777212,260376710,5,3,3.90904,3.88089,16.173,0.713,15.39,15.45,99.6,50.7,7.0,0.0

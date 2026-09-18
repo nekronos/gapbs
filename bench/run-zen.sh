@@ -28,6 +28,7 @@ CPU=8                              # CCD1 on BOTH -> 32 MiB L3 each. Pinning Zen
                                    # confound the comparison with cache size.
 REMOTE_GRAPHS='$HOME/code/gapbs/benchmark/graphs'
 OCC=ls_alloc_mab_count             # validated as a true occupancy counter on both
+NIXCLANG=${NIXCLANG:-llvmPackages_22.clang}   # clang 22.1.8
 
 MARCH=""; TIER=quick; TRIALS=16; GRAPHS="kron urand"; TAG=""; HOSTS="zen5 zen4"
 while [[ $# -gt 0 ]]; do case $1 in
@@ -43,15 +44,17 @@ march_for() { case $1 in zen4) echo znver4 ;; zen5) echo znver5 ;; esac; }
 OUT="bench/results/$TAG"; mkdir -p "$OUT"
 
 CSV="$OUT/zen.csv"
-echo "host,cpu,march,sha,tier,graph,nodes,edges,iters,trials,avg_time_s,min_trial_s,cycles_per_edge_iter,ipc,mlp" > "$CSV"
+echo "host,cpu,march,sha,tier,graph,nodes,edges,iters,trials,avg_time_s,min_trial_s,cycles_per_edge_iter,ipc,mlp,mlp_cond,pct_cyc_miss,pct_ge16,pct_ge32,pct_ge64" > "$CSV"
 
 for hostname in $HOSTS; do
   case $hostname in zen4) ADDR=$ZEN4 ;; zen5) ADDR=$ZEN5 ;; *) echo "host: zen4|zen5" >&2; exit 2 ;; esac
   M=${MARCH:-$(march_for "$hostname")}
   BUILD="bench/build/$hostname-$M"; mkdir -p "$BUILD"
   CXXFLAGS="-std=c++11 -O3 -Wall -g -fno-omit-frame-pointer -static -march=$M"
-  clang++ $CXXFLAGS src/pr.cc        -o "$BUILD/pr"
-  clang++ $CXXFLAGS src/converter.cc -o "$BUILD/converter"
+  # clang 22 via nix. No llvmPackages_22.openmp: the harness is serial by
+  # design, so GAPBS's omp pragmas are ignored and nothing links against it.
+  nix-shell -p "$NIXCLANG" --run \
+    "clang++ $CXXFLAGS src/pr.cc -o '$BUILD/pr' && clang++ $CXXFLAGS src/converter.cc -o '$BUILD/converter'"
   SHA=$(sha256sum "$BUILD/pr" | cut -c1-16)
   echo "=== $hostname ($ADDR)  -march=$M  sha=$SHA ===" >&2
   scp -q -o BatchMode=yes "$BUILD/pr" "$BUILD/converter" "$ADDR:/tmp/"
@@ -89,21 +92,31 @@ for g in $GRAPHS; do
   mint=$(sed -n 's/^Trial Time: *//p' <<<"$raw" | sort -g | head -1)
   iters=$(taskset -c $CPU /tmp/pr -f "$f" -i1000 -t1e-4 -n1 -l 2>/dev/null | grep -cE '^ *[0-9]+ ')
 
-  ctr() {
+  # cmask=N counts cycles with at least N misses outstanding, so the same
+  # occupancy event yields the distribution, not just the mean. Two groups of
+  # four; both verified at 100% enabled time, i.e. no multiplexing.
+  GA="cycles,instructions,$OCC,$OCC/cmask=1/"
+  GB="cycles,$OCC/cmask=16/,$OCC/cmask=32/,$OCC/cmask=64/"
+  ctr() { # $1=events $2=trials
     rm -f $WORK/perf.out
-    nixperf "perf stat -x, --no-big-num --output $WORK/perf.out -e cycles,instructions,$OCC -- taskset -c $CPU /tmp/pr -f $f -i1000 -t1e-4 -n$1"
+    nixperf "perf stat -x, --no-big-num --output $WORK/perf.out -e '$1' -- taskset -c $CPU /tmp/pr -f $f -i1000 -t1e-4 -n$2"
     awk -F, '$1 ~ /^[0-9]+$/ {printf "%s ", $1}' $WORK/perf.out
   }
-  read -r cN iN pN <<<"$(ctr $TRIALS)"
-  read -r c1 i1 p1 <<<"$(ctr 1)"
+  read -r cN iN pN q1N   <<<"$(ctr "$GA" $TRIALS)"
+  read -r c1 i1 p1 q11   <<<"$(ctr "$GA" 1)"
+  read -r dN aN bN eN    <<<"$(ctr "$GB" $TRIALS)"
+  read -r d1 a1 b1 e1    <<<"$(ctr "$GB" 1)"
 
   awk -v h="$HOSTNAME_TAG" -v cpu="$CPU" -v m="$MARCH" -v s="$SHA" -v t="$TIER" -v g="$g" \
       -v n="$nodes" -v e="$edges" -v it="$iters" -v tr="$TRIALS" -v avg="$avg" -v mint="$mint" \
-      -v c=$((cN-c1)) -v i=$((iN-i1)) -v p=$((pN-p1)) -v tn=$((TRIALS-1)) 'BEGIN{
+      -v c=$((cN-c1)) -v i=$((iN-i1)) -v p=$((pN-p1)) -v q=$((q1N-q11)) \
+      -v d=$((dN-d1)) -v a=$((aN-a1)) -v b=$((bN-b1)) -v x=$((eN-e1)) \
+      -v tn=$((TRIALS-1)) 'BEGIN{
         ed=e*it*tn;
-        printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%.3f,%.3f,%.2f\n",
+        printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%.3f,%.3f,%.2f,%.2f,%.1f,%.1f,%.1f,%.1f\n",
           h,cpu,m,s,t,g,n,e,it,tr,avg,mint,
-          (ed>0?c/ed:0),(c>0?i/c:0),(c>0?p/c:0) }'
+          (ed>0?c/ed:0),(c>0?i/c:0),(c>0?p/c:0),(q>0?p/q:0),
+          (c>0?100*q/c:0),(d>0?100*a/d:0),(d>0?100*b/d:0),(d>0?100*x/d:0) }'
 done
 REMOTE
 done
