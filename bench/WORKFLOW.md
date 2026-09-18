@@ -198,6 +198,17 @@ penalises one that only pays at real DRAM depth. Start at g24.
 The costs in the table were timed on the Intel machine; re-time them on the
 target before planning a campaign around them.
 
+**`urand` is a non-target, and that is itself a result.** It is measured on
+every iteration and reported, but it does not gate acceptance. At g27 it already
+sustains 49.9 of the 64 demand-load slots, so there is almost no room for a
+prefetch to fill — and the distance sweep confirmed it directly: flat at ~0.98
+across a 100x range of `D`, never once beating baseline. A kernel that is
+already near the demand ceiling cannot be helped by holding *more* misses; it
+needs *fewer* misses, which is a working-set lever, not a prefetch one. Report
+`urand` as evidence of where this technique stops applying.
+
+**`kron` is the target graph.** Accept and stop rules are read from it.
+
 **Keep both synthetic graphs from tier B up.** They behave differently — `kron`'s
 power-law degree distribution gives hub locality and lower achieved concurrency;
 `urand` has no locality at all and exposes more independent misses. A change can
@@ -351,27 +362,29 @@ The loop has a stopping rule, written down before iteration 1, so it does not
 run until someone loses interest. Four parts: the first two are the real ones,
 the third is the backstop, the fourth is what each iteration is judged by.
 
-**1. Headroom (primary).** Achieved MLP on Zen 5 is the thing being bought. Stop
-when either
-
-- two consecutive *accepted* changes each added less than **10%** to achieved
-  MLP — raised from 5% because measured MLP noise on `kron` is 4.1%
-  peak-to-peak, so a 5% rule would fire on noise. MLP is a ratio of two
-  setup-subtracted counters, so its errors compound and it is noisier than
-  `cycles_per_edge_iter` —
-  the lever has stopped moving the mechanism, whatever the cycles say; or
-- achieved MLP is within ~20% of the ceiling that applies to the technique in
-  use: 64 for demand loads alone, 124 once software prefetch is carrying misses.
-  Past that point the remaining gap is the miss-handling budget itself, and the
-  next lever is a different one (working-set reduction, TLB reach) — a new
-  campaign with its own baseline, not another iteration of this one.
-
-**2. Diminishing returns (secondary).** Stop when three consecutive iterations —
-accepted or rejected — each moved `cycles_per_edge_iter` by less than 2% on the
-target. 2% is the noise floor as currently measured, so below it nothing is
-distinguishable from noise anyway; if the Zen 5 re-measurement moves the floor,
-this threshold moves with it. Three in a row rather than one, because a single
+**1. Diminishing returns (primary).** Stop when three consecutive iterations —
+accepted or rejected — each moved `cycles_per_edge_iter` on the target graph by
+less than 2%. 2% is the measured noise floor, so below it nothing is
+distinguishable from noise. Three in a row rather than one, because a single
 flat iteration is usually a bad idea rather than an exhausted lever.
+
+**2. Headroom (secondary).** The quantity being bought is misses held *past the
+load queue*, so the headroom signals are `pct_ge64` and IPC — **not mean MLP**.
+Stop when either:
+
+- `pct_ge64` exceeds ~80%, i.e. the kernel is above the demand-load ceiling on
+  most cycles and little room remains between there and the part's limit; or
+- `pct_cyc_miss` falls well below ~99%, i.e. the kernel is no longer
+  miss-bound and the next lever is a different one — a new campaign with its own
+  baseline, not another iteration of this one.
+
+> **Do not stop on mean MLP.** Iteration 1 *lowered* it, 35.66 to 27.92, while
+> cutting cycles 14% and raising IPC 51%. Prefetch converts demand misses into
+> hits — the line arrives before the load issues — so occupancy-cycles per edge
+> fell a third even as the kernel got faster and reached deeper bursts. A rule
+> written on mean MLP scores that a failure. It is a mechanism indicator, and a
+> falling mean beside a rising `pct_ge64` is the signature of prefetch working,
+> not failing.
 
 **3. Hard caps.** So the loop terminates even if neither of the above trips:
 
