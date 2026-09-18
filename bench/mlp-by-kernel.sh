@@ -33,8 +33,12 @@ for spec in \
   "sssp  kron-g$SCALE.wsg  -d2 -n%d" \
   "tc    kron-g$SCALE.sg   -n%d" ; do
   set -- $spec; k=$1; gf=$2; shift 2; argt="$*"
+  # KERNELS="bfs pr" restricts the sweep -- tc alone is ~9 minutes.
+  if [[ -n "${KERNELS:-}" ]]; then [[ " $KERNELS " == *" $k "* ]] || continue; fi
   N=${TRIALS:-6}; [[ $k == tc ]] && N=2
-  aN=$(printf "$argt" $N); a1=$(printf "$argt" 1)
+  # Bash substitution, not printf: the arg strings begin with "-i"/"-d"/"-n",
+  # which printf parses as its own options and then emits nothing.
+  aN=${argt//%d/$N}; a1=${argt//%d/1}
   sec=$(taskset -c $CPU numactl --membind=$NODE "$B/$k" -f "$G/$gf" $aN 2>/dev/null \
         | sed -n 's/^Average Time: *//p')
   read -r cN iN pN pcN <<<"$(run "$B/$k" "-f $G/$gf $aN")"
