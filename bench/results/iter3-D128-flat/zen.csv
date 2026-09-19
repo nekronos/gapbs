@@ -1,0 +1,5 @@
+host,cpu,march,dist,hint,flat,sha,tier,graph,nodes,edges,iters,trials,avg_time_s,min_trial_s,cycles_per_edge_iter,ipc,mlp,mlp_cond,pct_cyc_miss,pct_ge16,pct_ge32,pct_ge64
+zen5,8,znver5,128,3,1,076f3ba74cdef755,standard,kron,134217728,2111632379,5,6,28.47633,28.44957,14.159,1.668,31.00,31.05,99.8,97.7,89.4,44.7
+zen5,8,znver5,128,3,1,076f3ba74cdef755,standard,urand,134217728,2147483394,4,6,35.80334,35.76547,22.623,1.049,31.97,32.00,99.9,97.5,89.8,59.8
+zen4,8,znver4,128,3,1,076f3ba74cdef755,standard,kron,134217728,2111632379,5,6,95.37929,95.05135,46.019,0.515,14.25,14.30,99.7,52.4,0.0,0.0
+zen4,8,znver4,128,3,1,076f3ba74cdef755,standard,urand,134217728,2147483394,4,6,109.50459,109.47783,64.743,0.369,16.87,16.91,99.8,75.9,0.0,0.0

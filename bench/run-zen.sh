@@ -36,28 +36,28 @@ REMOTE_GRAPHS='$HOME/code/gapbs/benchmark/graphs'
 OCC=ls_alloc_mab_count             # validated as a true occupancy counter on both
 NIXCLANG=${NIXCLANG:-llvmPackages_22.clang}   # clang 22.1.8
 
-MARCH=""; DIST=0; HINT=3; TIER=quick; TRIALS=16; GRAPHS="kron urand"; TAG=""; HOSTS="zen5 zen4"
+MARCH=""; DIST=0; HINT=3; FLAT=0; TIER=quick; TRIALS=16; GRAPHS="kron urand"; TAG=""; HOSTS="zen5 zen4"
 while [[ $# -gt 0 ]]; do case $1 in
   --march) MARCH=$2; shift 2 ;;  --tier) TIER=$2; shift 2 ;;
   --trials) TRIALS=$2; shift 2 ;; --graphs) GRAPHS=$2; shift 2 ;;
-  --dist) DIST=$2; shift 2 ;; --hint) HINT=$2; shift 2 ;;
+  --dist) DIST=$2; shift 2 ;; --hint) HINT=$2; shift 2 ;; --flat) FLAT=$2; shift 2 ;;
   --tag) TAG=$2; shift 2 ;;      --hosts) HOSTS=$2; shift 2 ;;
   *) echo "unknown arg: $1" >&2; exit 2 ;;
 esac; done
 case $TIER in quick) SCALE=24 ;; standard) SCALE=27 ;; *) echo "tier: quick|standard" >&2; exit 2 ;; esac
-[[ -n "$TAG" ]] || TAG="${MARCH:-per-host}-${TIER}-D${DIST}"
+[[ -n "$TAG" ]] || TAG="${MARCH:-per-host}-${TIER}-D${DIST}-F${FLAT}"
 march_for() { case $1 in zen4) echo znver4 ;; zen5) echo znver5 ;; esac; }
 
 OUT="bench/results/$TAG"; mkdir -p "$OUT"
 
 CSV="$OUT/zen.csv"
-echo "host,cpu,march,dist,hint,sha,tier,graph,nodes,edges,iters,trials,avg_time_s,min_trial_s,cycles_per_edge_iter,ipc,mlp,mlp_cond,pct_cyc_miss,pct_ge16,pct_ge32,pct_ge64" > "$CSV"
+echo "host,cpu,march,dist,hint,flat,sha,tier,graph,nodes,edges,iters,trials,avg_time_s,min_trial_s,cycles_per_edge_iter,ipc,mlp,mlp_cond,pct_cyc_miss,pct_ge16,pct_ge32,pct_ge64" > "$CSV"
 
 for hostname in $HOSTS; do
   case $hostname in zen4) ADDR=$ZEN4 ;; zen5) ADDR=$ZEN5 ;; *) echo "host: zen4|zen5" >&2; exit 2 ;; esac
   M=${MARCH:-$(march_for "$hostname")}
   BUILD="bench/build/$hostname-$M"; mkdir -p "$BUILD"
-  CXXFLAGS="-std=c++11 -O3 -Wall -g -fno-omit-frame-pointer -static -march=$M -DPR_PREFETCH_DIST=$DIST -DPR_PREFETCH_HINT=$HINT"
+  CXXFLAGS="-std=c++11 -O3 -Wall -g -fno-omit-frame-pointer -static -march=$M -DPR_PREFETCH_DIST=$DIST -DPR_PREFETCH_HINT=$HINT -DPR_PREFETCH_FLAT=$FLAT"
   # clang 22 via nix. No llvmPackages_22.openmp: the harness is serial by
   # design, so GAPBS's omp pragmas are ignored and nothing links against it.
   nix-shell -p "$NIXCLANG" --run \
@@ -72,7 +72,7 @@ for hostname in $HOSTS; do
   ssh -o BatchMode=yes "$ADDR" \
       "TIER='$TIER' SCALE='$SCALE' TRIALS='$TRIALS' GRAPHS='$GRAPHS' CPU='$CPU' \
        OCC='$OCC' HOSTNAME_TAG='$hostname' MARCH='$M' SHA='$SHA' \
-       DIST='$DIST' HINT='$HINT' bash -s" <<'REMOTE' >> "$CSV"
+       DIST='$DIST' HINT='$HINT' FLAT='$FLAT' bash -s" <<'REMOTE' >> "$CSV"
 set -uo pipefail
 GDIR="$HOME/code/gapbs/benchmark/graphs"
 WORK=/tmp/zenbench; mkdir -p $WORK
@@ -118,14 +118,14 @@ for g in $GRAPHS; do
   read -r dN aN bN eN    <<<"$(ctr "$GB" $TRIALS)"
   read -r d1 a1 b1 e1    <<<"$(ctr "$GB" 1)"
 
-  awk -v h="$HOSTNAME_TAG" -v cpu="$CPU" -v m="$MARCH" -v dd="$DIST" -v hh="$HINT" -v s="$SHA" -v t="$TIER" -v g="$g" \
+  awk -v h="$HOSTNAME_TAG" -v cpu="$CPU" -v m="$MARCH" -v dd="$DIST" -v hh="$HINT" -v fl="$FLAT" -v s="$SHA" -v t="$TIER" -v g="$g" \
       -v n="$nodes" -v e="$edges" -v it="$iters" -v tr="$TRIALS" -v avg="$avg" -v mint="$mint" \
       -v c=$((cN-c1)) -v i=$((iN-i1)) -v p=$((pN-p1)) -v q=$((q1N-q11)) \
       -v d=$((dN-d1)) -v a=$((aN-a1)) -v b=$((bN-b1)) -v x=$((eN-e1)) \
       -v tn=$((TRIALS-1)) 'BEGIN{
         ed=e*it*tn;
-        printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%.3f,%.3f,%.2f,%.2f,%.1f,%.1f,%.1f,%.1f\n",
-          h,cpu,m,dd,hh,s,t,g,n,e,it,tr,avg,mint,
+        printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%.3f,%.3f,%.2f,%.2f,%.1f,%.1f,%.1f,%.1f\n",
+          h,cpu,m,dd,hh,fl,s,t,g,n,e,it,tr,avg,mint,
           (ed>0?c/ed:0),(c>0?i/c:0),(c>0?p/c:0),(q>0?p/q:0),
           (c>0?100*q/c:0),(d>0?100*a/d:0),(d>0?100*b/d:0),(d>0?100*x/d:0) }'
 done

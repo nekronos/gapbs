@@ -19,12 +19,12 @@ HOSTS_CONF="$(dirname "$0")/hosts.conf"
 source "$HOSTS_CONF"
 
 TIER=standard; DISTS="0 4 8 16 32 64"; GRAPHS="kron urand"; TRIALS=4
-HOST=zen5; MARCH=znver5; CPU=8; HINT=3; TAG=""
+HOST=zen5; MARCH=znver5; CPU=8; HINT=3; FLAT=0; TAG=""
 while [[ $# -gt 0 ]]; do case $1 in
   --tier) TIER=$2; shift 2 ;;    --dists) DISTS=$2; shift 2 ;;
   --graphs) GRAPHS=$2; shift 2 ;; --trials) TRIALS=$2; shift 2 ;;
   --host) HOST=$2; shift 2 ;;    --march) MARCH=$2; shift 2 ;;
-  --hint) HINT=$2; shift 2 ;;    --tag) TAG=$2; shift 2 ;;
+  --hint) HINT=$2; shift 2 ;;  --flat) FLAT=$2; shift 2 ;;    --tag) TAG=$2; shift 2 ;;
   *) echo "unknown arg: $1" >&2; exit 2 ;;
 esac; done
 case $TIER in quick) SCALE=24 ;; standard) SCALE=27 ;; *) echo "tier: quick|standard" >&2; exit 2 ;; esac
@@ -33,15 +33,15 @@ case $HOST in zen5) ADDR=$ZEN5_HOST ;; zen4) ADDR=$ZEN4_HOST ;; *) echo "host: z
 
 OUT="bench/results/$TAG"; mkdir -p "$OUT"
 CSV="$OUT/sweep.csv"
-echo "host,march,tier,graph,dist,hint,trials,iters,avg_time_s,min_trial_s,ns_per_edge_iter,speedup_vs_d0(0=no D0 in run)" > "$CSV"
+echo "host,march,tier,graph,dist,hint,flat,trials,iters,avg_time_s,min_trial_s,ns_per_edge_iter,speedup_vs_d0(0=no D0 in run)" > "$CSV"
 echo "sweeping D in [$DISTS] on $HOST ($MARCH, tier $TIER, hint $HINT)" >&2
 
 declare -A BASE
 for D in $DISTS; do
-  B="bench/build/sweep-$MARCH-D$D-H$HINT"; mkdir -p "$B"
+  B="bench/build/sweep-$MARCH-D$D-H$HINT-F$FLAT"; mkdir -p "$B"
   nix-shell -p llvmPackages_22.clang --run \
     "clang++ -std=c++11 -O3 -Wall -g -fno-omit-frame-pointer -static -march=$MARCH \
-     -DPR_PREFETCH_DIST=$D -DPR_PREFETCH_HINT=$HINT src/pr.cc -o '$B/pr'"
+     -DPR_PREFETCH_DIST=$D -DPR_PREFETCH_HINT=$HINT -DPR_PREFETCH_FLAT=$FLAT src/pr.cc -o '$B/pr'"
   scp -q -o BatchMode=yes "$B/pr" "$ADDR:/tmp/pr_sweep"
   for g in $GRAPHS; do
     f=$([[ $TIER == standard ]] && echo "\$HOME/code/gapbs/benchmark/graphs/$g.sg" || echo "/tmp/zenbench/$g-g$SCALE.sg")
@@ -57,7 +57,7 @@ for D in $DISTS; do
     # report speedups against its own first point and read as if rebased.
     key="$g"; [[ $D -eq 0 ]] && BASE[$key]=$avg
     [[ -n "${BASE[$key]:-}" ]] || BASE[$key]=0
-    awk -v h="$HOST" -v m="$MARCH" -v t="$TIER" -v g="$g" -v d="$D" -v hint="$HINT" \
+    awk -v h="$HOST" -v m="$MARCH" -v t="$TIER" -v g="$g" -v d="$D" -v hint="$HINT" -v fl="$FLAT" \
         -v tr="$TRIALS" -v it="$iters" -v avg="$avg" -v mint="$mint" -v e="$edges" -v b="${BASE[$key]}" \
       'BEGIN{ printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%.3f,%.4f\n",
          h,m,t,g,d,hint,tr,it,avg,mint,(e*it>0?avg*1e9/(e*it):0),(avg>0 && b>0 ? b/avg : 0) }' | tee -a "$CSV" >&2

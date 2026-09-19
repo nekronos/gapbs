@@ -36,6 +36,9 @@ const float kDamp = 0.85;
 #ifndef PR_PREFETCH_HINT
 #define PR_PREFETCH_HINT 3
 #endif
+#ifndef PR_PREFETCH_FLAT
+#define PR_PREFETCH_FLAT 0
+#endif
 
 
 pvector<ScoreT> PageRankPullGS(const Graph &g, int max_iters, double epsilon=0,
@@ -47,12 +50,29 @@ pvector<ScoreT> PageRankPullGS(const Graph &g, int max_iters, double epsilon=0,
   #pragma omp parallel for
   for (NodeID n=0; n < g.num_nodes(); n++)
     outgoing_contrib[n] = init_score / g.out_degree(n);
+#if PR_PREFETCH_DIST > 0 && PR_PREFETCH_FLAT
+  const NodeID *edge_end =
+      g.num_nodes() > 0 ? g.in_neigh(g.num_nodes() - 1).end() : nullptr;
+#endif
   for (int iter=0; iter < max_iters; iter++) {
     double error = 0;
     #pragma omp parallel for reduction(+ : error) schedule(dynamic, 16384)
     for (NodeID u=0; u < g.num_nodes(); u++) {
       ScoreT incoming_total = 0;
-#if PR_PREFETCH_DIST > 0
+#if PR_PREFETCH_DIST > 0 && PR_PREFETCH_FLAT
+      auto in_nb = g.in_neigh(u);
+      const NodeID *last = in_nb.end();
+      for (const NodeID *p = in_nb.begin(); p < last; p++) {
+        // edge_end - p > D rather than p + D < edge_end: the latter forms a
+        // pointer past the end of the array, which is undefined behaviour even
+        // though it compiles to the same lea/cmp/cmov here.
+        const NodeID *pf = (edge_end - p > PR_PREFETCH_DIST)
+                               ? p + PR_PREFETCH_DIST
+                               : edge_end - 1;
+        __builtin_prefetch(&outgoing_contrib[*pf], 0, PR_PREFETCH_HINT);
+        incoming_total += outgoing_contrib[*p];
+      }
+#elif PR_PREFETCH_DIST > 0
       auto in_nb = g.in_neigh(u);
       const NodeID *first = in_nb.begin();
       const NodeID *last = in_nb.end();

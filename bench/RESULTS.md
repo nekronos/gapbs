@@ -176,7 +176,7 @@ stop rule. It does not indicate the prefetch lever is exhausted — only that th
 knob is not one. `pct_ge64` is 30.2%, so 70% of cycles remain below the
 demand-load ceiling.
 
-### 3 — flat CSR prefetch across vertex boundaries — in progress
+### 3 — flat CSR prefetch across vertex boundaries — ACCEPTED, Zen 5-specific
 
 Motivated by a limitation of iteration 1 visible in the graph statistics: kron
 has **average degree 15.7** while the winning distance is **D=96**, so
@@ -187,5 +187,55 @@ tail is untouched.
 
 Prefetching `D` edges ahead through the flattened CSR neighbour array, ignoring
 vertex boundaries, covers every edge regardless of its vertex's degree. Clamped
-with a conditional move rather than a branch, since a branch between the
-independent loads is what costs the concurrency being bought.
+with a conditional move rather than a branch. `PR_PREFETCH_FLAT=1`.
+
+**Distance sweep** (`bench/results/iter3-flat-sweep/`):
+
+| D | 0 | 32 | 64 | 96 | **128** | 192 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| kron | 1.000 | 0.835 | 1.096 | 1.318 | **1.443** | 1.304 |
+| urand | 1.000 | 0.859 | 1.114 | **1.204** | 1.121 | 1.036 |
+
+**Counters at D=128** (`bench/results/iter3-D128-flat/`), against the baseline:
+
+| | cyc/edge/iter | IPC | MLP | ≥32 | ≥64 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| zen5 kron, baseline | 21.088 | 0.545 | 35.66 | 63.3% | 0.0% |
+| zen5 kron, **D=128 flat** | **14.159** | **1.668** | 31.00 | 89.4% | **44.7%** |
+| zen5 urand, baseline | 25.332 | 0.456 | 49.92 | 93.3% | 0.0% |
+| zen5 urand, **D=128 flat** | **22.623** | **1.049** | 31.97 | 89.8% | **59.8%** |
+| zen4 kron, baseline | 39.322 | 0.294 | 15.85 | 0.0% | 0.0% |
+| zen4 kron, D=128 flat | 46.019 | 0.515 | 14.25 | 0.0% | 0.0% |
+| zen4 urand, baseline | 61.585 | 0.190 | 17.66 | 0.0% | 0.0% |
+| zen4 urand, D=128 flat | 64.743 | 0.369 | 16.87 | 0.0% | 0.0% |
+
+**kron -32.9% cycles, IPC 3.06x, `pct_ge64` 0 to 44.7%.** urand -10.7% at this
+distance (its own optimum is D=96, worth 20.4%). Zen 4 regresses on both, 17%
+and 5%, still never exceeding 32 outstanding — the same displacement effect as
+iteration 1, now larger because more prefetches compete for buffers it does not
+have.
+
+IPC tripling is the clearest single number in the campaign: the core went from
+retiring 0.545 instructions per cycle to 1.668 on identical work, because it is
+no longer standing still waiting for DRAM.
+
+### Correction, 2026-09-19: `urand` was never a non-target
+
+Iteration 2's record and the `WORKFLOW.md` rule both claimed `urand` could not
+benefit from prefetching because it already sustained 49.9 of 64 demand slots
+and had no headroom. **That was wrong, and the measurement behind it was of code
+that never ran.**
+
+`urand` is uniform-random with Poisson(16) degrees. The within-vertex prefetch
+fires only for vertices with more than `D` neighbours; at D=96 that is
+P = 8.8e-43, an expected 1e-34 vertices out of 134 million. **Zero prefetches
+were ever issued on `urand`.** Its flat ~0.98 was the restructured loop's
+overhead with the prefetch never executing. Under the flat-CSR form it gains
+20.4%.
+
+The evidence was there to read: `urand` was 0.979–0.982 across a 100x range of
+`D`. **A parameter that spans two orders of magnitude with no effect is evidence
+that the parameter is not reaching the code, before it is evidence about the
+machine.** The degree statistic that explained kron's low-degree tail was the
+same statistic that explained urand entirely, and it was applied to one and not
+the other.

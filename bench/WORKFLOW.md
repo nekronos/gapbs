@@ -198,16 +198,25 @@ penalises one that only pays at real DRAM depth. Start at g24.
 The costs in the table were timed on the Intel machine; re-time them on the
 target before planning a campaign around them.
 
-**`urand` is a non-target, and that is itself a result.** It is measured on
-every iteration and reported, but it does not gate acceptance. At g27 it already
-sustains 49.9 of the 64 demand-load slots, so there is almost no room for a
-prefetch to fill — and the distance sweep confirmed it directly: flat at ~0.98
-across a 100x range of `D`, never once beating baseline. A kernel that is
-already near the demand ceiling cannot be helped by holding *more* misses; it
-needs *fewer* misses, which is a working-set lever, not a prefetch one. Report
-`urand` as evidence of where this technique stops applying.
+**`urand` was wrongly written off as a non-target, 2026-09-18 — corrected
+2026-09-19.** This section previously recorded that `urand` could not benefit
+from prefetching because it already sustained 49.9 of the 64 demand slots and
+had no headroom to fill. That explanation was wrong, and the measurement behind
+it was of code that never ran.
 
-**`kron` is the target graph.** Accept and stop rules are read from it.
+`urand` is uniform-random with Poisson(16) degrees. The within-vertex prefetch
+splits the loop at `last - D` and fires only for vertices with more than `D`
+neighbours. At D=96 that is P = 8.8e-43 — an expected **1e-34** vertices out of
+134 million. The prefetch never executed once. The flat ~0.98 attributed to "no
+headroom" was the restructured loop's overhead with zero prefetches issued.
+
+Once the flat-CSR prefetch made it fire on every edge, `urand` gained **20.4%**.
+
+**The tell was in the data and was read past.** `urand` sat at 0.979–0.982
+across a 100x range of `D`. A parameter spanning two orders of magnitude with no
+effect is evidence that the parameter is not reaching the code, before it is
+evidence about the machine. Check that a knob is connected before explaining
+why the hardware ignores it.
 
 **Keep both synthetic graphs from tier B up.** They behave differently — `kron`'s
 power-law degree distribution gives hub locality and lower achieved concurrency;
