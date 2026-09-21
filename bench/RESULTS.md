@@ -283,3 +283,41 @@ stays clean.
 the CSR layout. `pr` and `pr_spmv` walk `u = 0..n`, so it holds. Any
 frontier-, queue-, or bucket-ordered kernel breaks it, which by inspection also
 covers `bfs`, `cc`, and the bucket loop in `sssp`.
+
+**`bc` result: ACCEPTED, +9.0% at D=64.**
+
+| D | 0 | 32 | **64** | 128 |
+| --- | ---: | ---: | ---: | ---: |
+| kron | 1.000 | 1.058 | **1.090** | 1.088 |
+
+Plateaus after 64. Much smaller than `pr`'s 41% for three compounding reasons:
+the within-vertex form covers ~68% of edges at D=64 rather than every edge;
+only the forward `depths[v]` gather is instrumented; and the frontier ordering
+means the lookahead cannot cross vertex boundaries at all.
+
+**The first `bc` sweep was a false negative, and it is the most instructive
+error in the campaign.** It measured -4.4% to -7.1%, monotonically worse with
+distance, and the obvious write-up — "frontier-ordered kernels do not benefit"
+— was consistent with the data and matched the correct flat-form finding from
+the same kernel. It was still wrong.
+
+Cause: two incompatible ways to handle a neighbour list shorter than `D`.
+
+| | short-list behaviour |
+| --- | --- |
+| loop split (`pr.cc`) | prefetching body never executes; **zero** prefetches |
+| clamp inside loop (first `bc.cc`) | prefetches `depths[*(last-1)]` **every iteration** |
+
+The clamp is correct for the *flat* form, where `edge_end - 1` is reached once
+at the end of the whole array. Ported into the *within-vertex* form it turns a
+rare fallback into the common path: at average degree 15.7 against D>=64 the
+condition is always false, so `bc` issued one redundant prefetch of the same
+address per edge, across 2.1 billion edges. Switching to the loop split moved
+the result 16 percentage points, from -7.1% to +9.0%.
+
+**Lesson, distinct from the tooling bugs earlier in this campaign.** Those
+produced implausible values that announced themselves — a negative MLP, 100.3%
+of cycles, a hostname under a `kernel` column. This produced a *plausible*
+value that agreed with a *correct* neighbouring finding. A result that confirms
+what you already believe deserves the same scrutiny as one that contradicts it,
+and more than one that looks absurd.

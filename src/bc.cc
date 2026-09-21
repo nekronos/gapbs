@@ -83,16 +83,32 @@ void PBFS(const Graph &g, NodeID source, pvector<CountT> &path_counts,
 #if PR_PREFETCH_DIST > 0
         auto out_nb = g.out_neigh(u);
         const NodeID *last = out_nb.end();
-        for (const NodeID *p = out_nb.begin(); p < last; p++) {
-          // The queue is in frontier order, so the edges that follow this
-          // vertex's in the CSR array belong to a vertex that is almost never
-          // the one processed next; clamp the lookahead to this vertex's own
-          // list. last - p > D rather than p + D < last: the latter forms a
-          // pointer past the end of the array, which is undefined behaviour.
-          const NodeID *pf = (last - p > PR_PREFETCH_DIST)
-                                 ? p + PR_PREFETCH_DIST
-                                 : last - 1;
-          __builtin_prefetch(&depths[*pf], 0, PR_PREFETCH_HINT);
+        const NodeID *first = out_nb.begin();
+        // Split the loop rather than clamping inside it. The queue is in
+        // frontier order, so the lookahead cannot cross a vertex boundary
+        // usefully -- but a clamp to last-1 is worse than no prefetch: at
+        // average degree 15.7 against D>=64 the clamp fires on essentially
+        // every vertex, issuing one redundant prefetch of the same address per
+        // edge across the whole graph. Measured at -4.4% to -7.1%. With the
+        // split, a list shorter than D issues none.
+        const NodeID *main_end =
+            (last - first > PR_PREFETCH_DIST) ? last - PR_PREFETCH_DIST : first;
+        const NodeID *p = first;
+        for (; p < main_end; p++) {
+          __builtin_prefetch(&depths[*(p + PR_PREFETCH_DIST)], 0,
+                             PR_PREFETCH_HINT);
+          const NodeID v = *p;
+          if ((depths[v] == -1) &&
+              (compare_and_swap(depths[v], static_cast<NodeID>(-1), depth))) {
+            lqueue.push_back(v);
+          }
+          if (depths[v] == depth) {
+            succ.set_bit_atomic(p - g_out_start);
+            #pragma omp atomic
+            path_counts[v] += path_counts[u];
+          }
+        }
+        for (; p < last; p++) {            // tail: no prefetch
           const NodeID v = *p;
           if ((depths[v] == -1) &&
               (compare_and_swap(depths[v], static_cast<NodeID>(-1), depth))) {
