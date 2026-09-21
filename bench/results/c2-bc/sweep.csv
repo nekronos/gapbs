@@ -1,0 +1,1 @@
+kernel,host,march,tier,graph,dist,hint,flat,trials,iters,avg_time_s,min_trial_s,ns_per_edge_iter,speedup_vs_d0(0=no D0 in run)

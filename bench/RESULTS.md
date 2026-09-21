@@ -239,3 +239,47 @@ that the parameter is not reaching the code, before it is evidence about the
 machine.** The degree statistic that explained kron's low-degree tail was the
 same statistic that explained urand entirely, and it was applied to one and not
 the other.
+
+## Campaign 2 — other kernels
+
+### `pr_spmv` — ACCEPTED, transfers cleanly
+
+Flat-CSR prefetch ported directly from `pr.cc`; `pr_spmv` walks the same
+`in_neigh` direction and gathers the same `outgoing_contrib[v]`. The Jacobi
+formulation costs a separate refresh pass (baseline 56.85 s against `pr`'s
+41.51 s, 7 iterations against 5) but does not touch the access pattern.
+
+| D | 0 | 64 | 96 | **128** | 192 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| kron | 1.000 | 1.078 | 1.295 | **1.410** | 1.307 |
+| urand | 1.000 | 1.100 | **1.182** | 1.097 | 1.021 |
+
+**+41.0% on kron at D=128.** Same optima as `pr` (kron 128, urand 96), near
+identical curve shape and magnitude. The technique transfers to a structurally
+identical gather with no retuning.
+
+### `bc` — the flat form does not apply, and the reason is measurable
+
+`bc` walks a `SlidingQueue` in frontier order, not vertex-id order. Measured on
+the test graph: **the next queue vertex is `u+1` in 0.15-0.22% of steps.** A
+flat lookahead crossing a vertex boundary therefore lands on a line that is
+essentially never the one used next — and at D=128 that would be ~44% of
+prefetches. On `urand`, with no hubs, it is 100% waste. A wasted flat prefetch
+is not neutral: it is a real DRAM read on a wrong line.
+
+So `bc` uses the **within-vertex** form, which still covers 55.9% of edges at
+D=128 (4.8% of vertices carry 76.6% of edges), and `PR_PREFETCH_FLAT=1` is a
+compile error there so the sweep driver cannot record a within-vertex build
+labelled as flat.
+
+Only the forward BFS `depths[v]` gather is instrumented — it misses on 100% of
+edges. Skipped: `path_counts[v]` in the same loop (~87% of those prefetches
+would be waste, since only 10-14% of traversed edges are successor edges), and
+the whole backward pass for the same reason. A `succ`-bit-gated variant is a
+different, unproven pattern and belongs in its own iteration so attribution
+stays clean.
+
+**Generalisation.** The flat form needs the *outer* walk to be sequential in
+the CSR layout. `pr` and `pr_spmv` walk `u = 0..n`, so it holds. Any
+frontier-, queue-, or bucket-ordered kernel breaks it, which by inspection also
+covers `bfs`, `cc`, and the bucket loop in `sssp`.

@@ -47,6 +47,19 @@ using namespace std;
 typedef float ScoreT;
 typedef double CountT;
 
+#ifndef PR_PREFETCH_DIST
+#define PR_PREFETCH_DIST 0
+#endif
+#ifndef PR_PREFETCH_HINT
+#define PR_PREFETCH_HINT 3
+#endif
+#ifndef PR_PREFETCH_FLAT
+#define PR_PREFETCH_FLAT 0
+#endif
+#if PR_PREFETCH_FLAT
+#error "bc: the flat-CSR lookahead is meaningless in frontier order; build with PR_PREFETCH_FLAT=0"
+#endif
+
 
 void PBFS(const Graph &g, NodeID source, pvector<CountT> &path_counts,
     Bitmap &succ, vector<SlidingQueue<NodeID>::iterator> &depth_index,
@@ -67,6 +80,31 @@ void PBFS(const Graph &g, NodeID source, pvector<CountT> &path_counts,
       #pragma omp for schedule(dynamic, 64) nowait
       for (auto q_iter = queue.begin(); q_iter < queue.end(); q_iter++) {
         NodeID u = *q_iter;
+#if PR_PREFETCH_DIST > 0
+        auto out_nb = g.out_neigh(u);
+        const NodeID *last = out_nb.end();
+        for (const NodeID *p = out_nb.begin(); p < last; p++) {
+          // The queue is in frontier order, so the edges that follow this
+          // vertex's in the CSR array belong to a vertex that is almost never
+          // the one processed next; clamp the lookahead to this vertex's own
+          // list. last - p > D rather than p + D < last: the latter forms a
+          // pointer past the end of the array, which is undefined behaviour.
+          const NodeID *pf = (last - p > PR_PREFETCH_DIST)
+                                 ? p + PR_PREFETCH_DIST
+                                 : last - 1;
+          __builtin_prefetch(&depths[*pf], 0, PR_PREFETCH_HINT);
+          const NodeID v = *p;
+          if ((depths[v] == -1) &&
+              (compare_and_swap(depths[v], static_cast<NodeID>(-1), depth))) {
+            lqueue.push_back(v);
+          }
+          if (depths[v] == depth) {
+            succ.set_bit_atomic(p - g_out_start);
+            #pragma omp atomic
+            path_counts[v] += path_counts[u];
+          }
+        }
+#else
         for (NodeID &v : g.out_neigh(u)) {
           if ((depths[v] == -1) &&
               (compare_and_swap(depths[v], static_cast<NodeID>(-1), depth))) {
@@ -78,6 +116,7 @@ void PBFS(const Graph &g, NodeID source, pvector<CountT> &path_counts,
             path_counts[v] += path_counts[u];
           }
         }
+#endif
       }
       lqueue.flush();
       #pragma omp barrier
