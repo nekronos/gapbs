@@ -65,9 +65,69 @@ const WeightT kDistInf = numeric_limits<WeightT>::max()/2;
 const size_t kMaxBin = numeric_limits<size_t>::max()/2;
 const size_t kBinSizeThreshold = 1000;
 
+#ifndef PR_PREFETCH_DIST
+#define PR_PREFETCH_DIST 0
+#endif
+#ifndef PR_PREFETCH_HINT
+#define PR_PREFETCH_HINT 3
+#endif
+#ifndef PR_PREFETCH_FLAT
+#define PR_PREFETCH_FLAT 0
+#endif
+#if PR_PREFETCH_FLAT
+#error "sssp: the flat-CSR lookahead is meaningless in bucket order; build with PR_PREFETCH_FLAT=0"
+#endif
+
 inline
 void RelaxEdges(const WGraph &g, NodeID u, WeightT delta,
                 pvector<WeightT> &dist, vector <vector<NodeID>> &local_bins) {
+#if PR_PREFETCH_DIST > 0
+  auto out_nb = g.out_neigh(u);
+  const WNode *first = out_nb.begin();
+  const WNode *last = out_nb.end();
+  // Split the loop rather than clamping inside it. Vertices arrive in
+  // delta-stepping bucket order, so a lookahead across the vertex boundary
+  // lands on a list that is not processed next -- but a clamp to last-1 is
+  // worse than no prefetch: at average degree 15.7 against D>=32 the clamp
+  // fires on essentially every vertex, issuing one redundant prefetch of the
+  // same address per edge (bc.cc measured -7.1% with the clamp, +9.0% with
+  // the split). With the split, a list shorter than D issues none. WNode is
+  // 8 bytes, so a given D reaches half as far in bytes as it does in pr.
+  const WNode *main_end =
+      (last - first > PR_PREFETCH_DIST) ? last - PR_PREFETCH_DIST : first;
+  const WNode *p = first;
+  for (; p < main_end; p++) {
+    __builtin_prefetch(&dist[(p + PR_PREFETCH_DIST)->v], 0, PR_PREFETCH_HINT);
+    WNode wn = *p;
+    WeightT old_dist = dist[wn.v];
+    WeightT new_dist = dist[u] + wn.w;
+    while (new_dist < old_dist) {
+      if (compare_and_swap(dist[wn.v], old_dist, new_dist)) {
+        size_t dest_bin = new_dist/delta;
+        if (dest_bin >= local_bins.size())
+          local_bins.resize(dest_bin+1);
+        local_bins[dest_bin].push_back(wn.v);
+        break;
+      }
+      old_dist = dist[wn.v];      // swap failed, recheck dist update & retry
+    }
+  }
+  for (; p < last; p++) {            // tail: no prefetch
+    WNode wn = *p;
+    WeightT old_dist = dist[wn.v];
+    WeightT new_dist = dist[u] + wn.w;
+    while (new_dist < old_dist) {
+      if (compare_and_swap(dist[wn.v], old_dist, new_dist)) {
+        size_t dest_bin = new_dist/delta;
+        if (dest_bin >= local_bins.size())
+          local_bins.resize(dest_bin+1);
+        local_bins[dest_bin].push_back(wn.v);
+        break;
+      }
+      old_dist = dist[wn.v];      // swap failed, recheck dist update & retry
+    }
+  }
+#else
   for (WNode wn : g.out_neigh(u)) {
     WeightT old_dist = dist[wn.v];
     WeightT new_dist = dist[u] + wn.w;
@@ -82,6 +142,7 @@ void RelaxEdges(const WGraph &g, NodeID u, WeightT delta,
       old_dist = dist[wn.v];      // swap failed, recheck dist update & retry
     }
   }
+#endif
 }
 
 pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta,

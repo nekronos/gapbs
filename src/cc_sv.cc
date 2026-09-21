@@ -42,6 +42,19 @@ more consistent performance for undirected graphs.
 
 using namespace std;
 
+#ifndef PR_PREFETCH_DIST
+#define PR_PREFETCH_DIST 0
+#endif
+#ifndef PR_PREFETCH_HINT
+#define PR_PREFETCH_HINT 3
+#endif
+#ifndef PR_PREFETCH_FLAT
+#define PR_PREFETCH_FLAT 0
+#endif
+#if PR_PREFETCH_FLAT
+#error "cc_sv: the flat-CSR lookahead is meaningless here (the gather sits behind the comp[] indirection); build with PR_PREFETCH_FLAT=0"
+#endif
+
 
 // The hooking condition (comp_u < comp_v) may not coincide with the edge's
 // direction, so we use a min-max swap such that lower component IDs propagate
@@ -58,6 +71,47 @@ pvector<NodeID> ShiloachVishkin(const Graph &g) {
     num_iter++;
     #pragma omp parallel for
     for (NodeID u=0; u < g.num_nodes(); u++) {
+#if PR_PREFETCH_DIST > 0
+      auto out_nb = g.out_neigh(u);
+      const NodeID *first = out_nb.begin();
+      const NodeID *last = out_nb.end();
+      // Split the loop rather than clamping inside it: at average degree 15.7
+      // against D>=32 a clamp to last-1 fires on essentially every vertex and
+      // issues one redundant prefetch per edge (bc.cc measured -7.1% with the
+      // clamp, +9.0% with the split). A list shorter than D issues none.
+      // Only the first hop comp[v] is prefetchable: comp[high_comp] is
+      // addressed by the value comp[v] returns, so it cannot be covered.
+      const NodeID *main_end =
+          (last - first > PR_PREFETCH_DIST) ? last - PR_PREFETCH_DIST : first;
+      const NodeID *p = first;
+      for (; p < main_end; p++) {
+        __builtin_prefetch(&comp[*(p + PR_PREFETCH_DIST)], 0, PR_PREFETCH_HINT);
+        NodeID v = *p;
+        NodeID comp_u = comp[u];
+        NodeID comp_v = comp[v];
+        if (comp_u == comp_v) continue;
+        // Hooking condition so lower component ID wins independent of direction
+        NodeID high_comp = comp_u > comp_v ? comp_u : comp_v;
+        NodeID low_comp = comp_u + (comp_v - high_comp);
+        if (high_comp == comp[high_comp]) {
+          change = true;
+          comp[high_comp] = low_comp;
+        }
+      }
+      for (; p < last; p++) {            // tail: no prefetch
+        NodeID v = *p;
+        NodeID comp_u = comp[u];
+        NodeID comp_v = comp[v];
+        if (comp_u == comp_v) continue;
+        // Hooking condition so lower component ID wins independent of direction
+        NodeID high_comp = comp_u > comp_v ? comp_u : comp_v;
+        NodeID low_comp = comp_u + (comp_v - high_comp);
+        if (high_comp == comp[high_comp]) {
+          change = true;
+          comp[high_comp] = low_comp;
+        }
+      }
+#else
       for (NodeID v : g.out_neigh(u)) {
         NodeID comp_u = comp[u];
         NodeID comp_v = comp[v];
@@ -70,6 +124,7 @@ pvector<NodeID> ShiloachVishkin(const Graph &g) {
           comp[high_comp] = low_comp;
         }
       }
+#endif
     }
     #pragma omp parallel for
     for (NodeID n=0; n < g.num_nodes(); n++) {

@@ -321,3 +321,31 @@ of cycles, a hostname under a `kernel` column. This produced a *plausible*
 value that agreed with a *correct* neighbouring finding. A result that confirms
 what you already believe deserves the same scrutiny as one that contradicts it,
 and more than one that looks absurd.
+
+### `sssp` — ACCEPTED, +35.8% at D=128
+
+Within-vertex loop split on the `dist[wn.v]` gather in `RelaxEdges`, the single
+gather both DeltaStep call sites go through. `WNode` is 8 bytes (id + weight),
+so a given `D` reaches half as far in bytes as in `pr`.
+
+| D | 0 | 32 | 64 | **128** | 192 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| kron | 1.000 | 1.255 | 1.299 | **1.358** | 1.246 |
+
+**This breaks the explanation that was forming.** After `bc` came in at +9.0%
+against the PageRanks' 41%, the tempting story was that the flat form is what
+matters and within-vertex kernels are capped near 10%. `sssp` uses the
+within-vertex form and reaches 35.8%.
+
+The better predictor is **what fraction of the kernel's runtime the
+instrumented gather represents**:
+
+| kernel | form | instrumented | result |
+| --- | --- | --- | ---: |
+| `pr`, `pr_spmv` | flat | the whole kernel, every edge | 41% |
+| `sssp` | within-vertex | `RelaxEdges` — every edge, is the kernel | 35.8% |
+| `bc` | within-vertex | forward `depths[v]` only, one of two phases | 9.0% |
+
+`bc` is low because roughly a third of its work was instrumented, not because
+within-vertex is weak. Prefetch form sets the *ceiling*; coverage of the
+runtime sets the *result*.
