@@ -36,16 +36,17 @@ REMOTE_GRAPHS='$HOME/code/gapbs/benchmark/graphs'
 OCC=ls_alloc_mab_count             # validated as a true occupancy counter on both
 NIXCLANG=${NIXCLANG:-llvmPackages_22.clang}   # clang 22.1.8
 
-MARCH=""; DIST=0; HINT=3; FLAT=0; TIER=quick; TRIALS=16; GRAPHS="kron urand"; TAG=""; HOSTS="zen5 zen4"
+MARCH=""; DIST=0; HINT=3; FLAT=0; KERNEL=pr; TIER=quick; TRIALS=16; GRAPHS="kron urand"; TAG=""; HOSTS="zen5 zen4"
 while [[ $# -gt 0 ]]; do case $1 in
   --march) MARCH=$2; shift 2 ;;  --tier) TIER=$2; shift 2 ;;
   --trials) TRIALS=$2; shift 2 ;; --graphs) GRAPHS=$2; shift 2 ;;
+  --kernel) KERNEL=$2; shift 2 ;;
   --dist) DIST=$2; shift 2 ;; --hint) HINT=$2; shift 2 ;; --flat) FLAT=$2; shift 2 ;;
   --tag) TAG=$2; shift 2 ;;      --hosts) HOSTS=$2; shift 2 ;;
   *) echo "unknown arg: $1" >&2; exit 2 ;;
 esac; done
 case $TIER in quick) SCALE=24 ;; standard) SCALE=27 ;; *) echo "tier: quick|standard" >&2; exit 2 ;; esac
-[[ -n "$TAG" ]] || TAG="${MARCH:-per-host}-${TIER}-D${DIST}-F${FLAT}"
+[[ -n "$TAG" ]] || TAG="${KERNEL}-${MARCH:-per-host}-${TIER}-D${DIST}-F${FLAT}"
 march_for() { case $1 in zen4) echo znver4 ;; zen5) echo znver5 ;; esac; }
 
 OUT="bench/results/$TAG"; mkdir -p "$OUT"
@@ -61,7 +62,7 @@ for hostname in $HOSTS; do
   # clang 22 via nix. No llvmPackages_22.openmp: the harness is serial by
   # design, so GAPBS's omp pragmas are ignored and nothing links against it.
   nix-shell -p "$NIXCLANG" --run \
-    "clang++ $CXXFLAGS src/pr.cc -o '$BUILD/pr' && clang++ $CXXFLAGS src/converter.cc -o '$BUILD/converter'"
+    "clang++ $CXXFLAGS src/$KERNEL.cc -o '$BUILD/pr' && clang++ $CXXFLAGS src/converter.cc -o '$BUILD/converter'"
   SHA=$(sha256sum "$BUILD/pr" | cut -c1-16)
   echo "=== $hostname ($ADDR)  -march=$M  sha=$SHA ===" >&2
   scp -q -o BatchMode=yes "$BUILD/pr" "$BUILD/converter" "$ADDR:/tmp/"
@@ -72,14 +73,14 @@ for hostname in $HOSTS; do
   ssh -o BatchMode=yes "$ADDR" \
       "TIER='$TIER' SCALE='$SCALE' TRIALS='$TRIALS' GRAPHS='$GRAPHS' CPU='$CPU' \
        OCC='$OCC' HOSTNAME_TAG='$hostname' MARCH='$M' SHA='$SHA' \
-       DIST='$DIST' HINT='$HINT' FLAT='$FLAT' bash -s" <<'REMOTE' >> "$CSV"
+       DIST='$DIST' HINT='$HINT' FLAT='$FLAT' KERNEL='$KERNEL' bash -s" <<'REMOTE' >> "$CSV"
 set -uo pipefail
 GDIR="$HOME/code/gapbs/benchmark/graphs"
 WORK=/tmp/zenbench; mkdir -p $WORK
 
 # The standard graphs are g27. A smaller tier is generated once, locally.
 resolve() {
-  if [[ "$TIER" == standard ]]; then echo "$GDIR/$1.sg"; return; fi
+  if [[ "$TIER" == standard ]]; then echo "$GDIR/$1.$(case $KERNEL in sssp) echo wsg;; *) echo sg;; esac)"; return; fi
   local f="$WORK/$1-g$SCALE.sg"
   if [[ ! -f $f ]]; then
     case $1 in kron)  /tmp/converter -g$SCALE -k16 -b "$f" >/dev/null 2>&1 ;;
@@ -93,7 +94,13 @@ nixperf() { nix-shell -p linuxPackages.perf --run "$1" >/dev/null 2>&1; }
 
 for g in $GRAPHS; do
   f=$(resolve "$g") || continue
-  raw=$(taskset -c $CPU /tmp/pr -f "$f" -i1000 -t1e-4 -n$TRIALS 2>/dev/null)
+  case $KERNEL in
+    pr|pr_spmv)      KARGS="-i1000 -t1e-4" ;;
+    bc)              KARGS="-i4" ;;
+    sssp)            KARGS="-d2" ;;
+    cc|cc_sv|bfs|tc) KARGS="" ;;
+  esac
+  raw=$(taskset -c $CPU /tmp/pr -f "$f" $KARGS -n$TRIALS 2>/dev/null)
   # Guard: a failed exec yields no Average Time. perf would still report plausible
   # counters for it, so refuse to emit a row rather than record a phantom.
   avg=$(sed -n 's/^Average Time: *//p' <<<"$raw")
@@ -101,7 +108,11 @@ for g in $GRAPHS; do
   nodes=$(sed -n 's/^Graph has \([0-9]*\) nodes.*/\1/p' <<<"$raw")
   edges=$(sed -n 's/^Graph has [0-9]* nodes and \([0-9]*\) .*/\1/p' <<<"$raw")
   mint=$(sed -n 's/^Trial Time: *//p' <<<"$raw" | sort -g | head -1)
-  iters=$(taskset -c $CPU /tmp/pr -f "$f" -i1000 -t1e-4 -n1 -l 2>/dev/null | grep -cE '^ *[0-9]+ ')
+  case $KERNEL in
+    pr|pr_spmv) iters=$(taskset -c $CPU /tmp/pr -f "$f" $KARGS -n1 -l 2>/dev/null | grep -cE '^ *[0-9]+ ') ;;
+    *)          iters=1 ;;
+  esac
+  [[ ${iters:-0} -gt 0 ]] || iters=1
 
   # cmask=N counts cycles with at least N misses outstanding, so the same
   # occupancy event yields the distribution, not just the mean. Two groups of
@@ -110,7 +121,7 @@ for g in $GRAPHS; do
   GB="cycles,$OCC/cmask=16/,$OCC/cmask=32/,$OCC/cmask=64/"
   ctr() { # $1=events $2=trials
     rm -f $WORK/perf.out
-    nixperf "perf stat -x, --no-big-num --output $WORK/perf.out -e '$1' -- taskset -c $CPU /tmp/pr -f $f -i1000 -t1e-4 -n$2"
+    nixperf "perf stat -x, --no-big-num --output $WORK/perf.out -e '$1' -- taskset -c $CPU /tmp/pr -f $f $KARGS -n$2"
     awk -F, '$1 ~ /^[0-9]+$/ {printf "%s ", $1}' $WORK/perf.out
   }
   read -r cN iN pN q1N   <<<"$(ctr "$GA" $TRIALS)"

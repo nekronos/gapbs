@@ -349,3 +349,61 @@ instrumented gather represents**:
 `bc` is low because roughly a third of its work was instrumented, not because
 within-vertex is weak. Prefetch form sets the *ceiling*; coverage of the
 runtime sets the *result*.
+
+### `cc_sv` — ACCEPTED, 2.02x at D=128 — the largest result of the campaign
+
+Within-vertex loop split on `comp[v]` in the hooking loop, the only prefetchable
+gather. `comp[comp[v]]` cannot be covered: its address is the value the first
+load returns.
+
+| D | 0 | 8 | 16 | 32 | 64 | 96 | **128** | 192 | 256 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| kron | 1.000 | 1.315 | 1.457 | 1.678 | 1.847 | 1.978 | **2.020** | 1.855 | 1.782 |
+
+**I predicted single digits for this kernel and ranked it last.** The reasoning
+was that pointer jumping puts half the misses out of reach. The premise was
+wrong: `comp[high_comp]` is *conditional*, taken only when `comp_u != comp_v`,
+which after the first iteration is rare. The first hop is nearly all the misses
+and is fully prefetchable — over a 536 MB array touched roughly 4.2 billion
+times, the most miss-dense gather in the suite. Its baseline of 58.44 s against
+`sssp`'s 29.52 s on the same graph says as much.
+
+The error is the same one that produced the wrong `urand` conclusion in
+campaign 1: **reasoning about the structure of an access pattern without asking
+how often each branch of it executes.**
+
+## Campaign 2 summary
+
+| kernel | speedup | D | form | coverage |
+| --- | ---: | ---: | --- | --- |
+| **`cc_sv`** | **2.02x** | 128 | within-vertex | first hop, ~all misses |
+| `pr` | 1.44x | 128 | flat | whole kernel |
+| `pr_spmv` | 1.41x | 128 | flat | whole kernel |
+| `sssp` | 1.36x | 128 | within-vertex | whole kernel |
+| `bc` | 1.09x | 64 | within-vertex | one phase of two |
+
+**D=128 is optimal for four of five kernels**, across different element sizes
+(4 B vs 8 B `WNode`), iteration orders (sequential, bucket, frontier) and both
+prefetch forms. That points at the distance being set by DRAM latency against
+issue rate rather than by anything kernel-specific.
+
+### Scoring the predictions
+
+The ranked candidate list was written before any testing.
+
+| kernel | predicted | actual |
+| --- | --- | ---: |
+| `pr_spmv` | Tier 1, near-certain | +41% |
+| `bc` | Tier 1, strong | +9% |
+| `sssp` | Tier 2, +10-18% | +36% |
+| `cc_sv` | Tier 2, single digits | **+102%** |
+
+**Four for four on direction. Zero for four on magnitude, and the order
+inverted** — the kernel ranked last is the largest win by a factor of two, the
+one ranked first is the smallest.
+
+The ranking was built on whether the access pattern *admits* a prefetch, which
+predicted the sign correctly every time. Magnitude turned out to be governed by
+two things the ranking never considered: what fraction of the kernel's runtime
+the prefetchable gather represents, and how miss-dense that gather is. Both are
+measurable up front; neither was measured.

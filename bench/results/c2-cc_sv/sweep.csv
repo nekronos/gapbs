@@ -1,0 +1,6 @@
+kernel,host,march,tier,graph,dist,hint,flat,trials,iters,avg_time_s,min_trial_s,ns_per_edge_iter,speedup_vs_d0(0=no D0 in run)
+cc_sv,zen5,znver5,standard,kron,0,3,0,3,1,58.44091,58.22814,27.676,1.0000
+cc_sv,zen5,znver5,standard,kron,8,3,0,3,1,44.44555,44.40506,21.048,1.3149
+cc_sv,zen5,znver5,standard,kron,16,3,0,3,1,40.11466,40.01499,18.997,1.4568
+cc_sv,zen5,znver5,standard,kron,32,3,0,3,1,34.82121,34.37150,16.490,1.6783
+cc_sv,zen5,znver5,standard,kron,64,3,0,3,1,31.64148,31.58773,14.984,1.8470
