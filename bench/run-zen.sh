@@ -65,7 +65,9 @@ for hostname in $HOSTS; do
     "clang++ $CXXFLAGS src/$KERNEL.cc -o '$BUILD/pr' && clang++ $CXXFLAGS src/converter.cc -o '$BUILD/converter'"
   SHA=$(sha256sum "$BUILD/pr" | cut -c1-16)
   echo "=== $hostname ($ADDR)  -march=$M  sha=$SHA ===" >&2
-  scp -q -o BatchMode=yes "$BUILD/pr" "$BUILD/converter" "$ADDR:/tmp/"
+  REMOTE_BIN=/tmp/pr.$$
+  scp -q -o BatchMode=yes "$BUILD/pr" "$ADDR:$REMOTE_BIN"
+  scp -q -o BatchMode=yes "$BUILD/converter" "$ADDR:/tmp/converter.$$.$$"
 
   # ssh flattens its arguments into one string for the remote shell, so a value
   # containing a space (GRAPHS="kron urand") splits and the second word is run
@@ -73,7 +75,7 @@ for hostname in $HOSTS; do
   ssh -o BatchMode=yes "$ADDR" \
       "TIER='$TIER' SCALE='$SCALE' TRIALS='$TRIALS' GRAPHS='$GRAPHS' CPU='$CPU' \
        OCC='$OCC' HOSTNAME_TAG='$hostname' MARCH='$M' SHA='$SHA' \
-       DIST='$DIST' HINT='$HINT' FLAT='$FLAT' KERNEL='$KERNEL' bash -s" <<'REMOTE' >> "$CSV"
+       DIST='$DIST' HINT='$HINT' FLAT='$FLAT' KERNEL='$KERNEL' REMOTE_BIN='$REMOTE_BIN' bash -s" <<'REMOTE' >> "$CSV"
 set -uo pipefail
 GDIR="$HOME/code/gapbs/benchmark/graphs"
 WORK=/tmp/zenbench; mkdir -p $WORK
@@ -83,8 +85,8 @@ resolve() {
   if [[ "$TIER" == standard ]]; then echo "$GDIR/$1.$(case $KERNEL in sssp) echo wsg;; *) echo sg;; esac)"; return; fi
   local f="$WORK/$1-g$SCALE.sg"
   if [[ ! -f $f ]]; then
-    case $1 in kron)  /tmp/converter -g$SCALE -k16 -b "$f" >/dev/null 2>&1 ;;
-               urand) /tmp/converter -u$SCALE -k16 -b "$f" >/dev/null 2>&1 ;;
+    case $1 in kron)  /tmp/converter.$$ -g$SCALE -k16 -b "$f" >/dev/null 2>&1 ;;
+               urand) /tmp/converter.$$ -u$SCALE -k16 -b "$f" >/dev/null 2>&1 ;;
                *) echo "no generator for $1" >&2; return 1 ;; esac
   fi
   echo "$f"
@@ -100,7 +102,7 @@ for g in $GRAPHS; do
     sssp)            KARGS="-d2" ;;
     cc|cc_sv|bfs|tc) KARGS="" ;;
   esac
-  raw=$(taskset -c $CPU /tmp/pr -f "$f" $KARGS -n$TRIALS 2>/dev/null)
+  raw=$(taskset -c $CPU $REMOTE_BIN -f "$f" $KARGS -n$TRIALS 2>/dev/null)
   # Guard: a failed exec yields no Average Time. perf would still report plausible
   # counters for it, so refuse to emit a row rather than record a phantom.
   avg=$(sed -n 's/^Average Time: *//p' <<<"$raw")
@@ -109,7 +111,7 @@ for g in $GRAPHS; do
   edges=$(sed -n 's/^Graph has [0-9]* nodes and \([0-9]*\) .*/\1/p' <<<"$raw")
   mint=$(sed -n 's/^Trial Time: *//p' <<<"$raw" | sort -g | head -1)
   case $KERNEL in
-    pr|pr_spmv) iters=$(taskset -c $CPU /tmp/pr -f "$f" $KARGS -n1 -l 2>/dev/null | grep -cE '^ *[0-9]+ ') ;;
+    pr|pr_spmv) iters=$(taskset -c $CPU $REMOTE_BIN -f "$f" $KARGS -n1 -l 2>/dev/null | grep -cE '^ *[0-9]+ ') ;;
     *)          iters=1 ;;
   esac
   [[ ${iters:-0} -gt 0 ]] || iters=1
@@ -121,7 +123,7 @@ for g in $GRAPHS; do
   GB="cycles,$OCC/cmask=16/,$OCC/cmask=32/,$OCC/cmask=64/"
   ctr() { # $1=events $2=trials
     rm -f $WORK/perf.out
-    nixperf "perf stat -x, --no-big-num --output $WORK/perf.out -e '$1' -- taskset -c $CPU /tmp/pr -f $f $KARGS -n$2"
+    nixperf "perf stat -x, --no-big-num --output $WORK/perf.out -e '$1' -- taskset -c $CPU $REMOTE_BIN -f $f $KARGS -n$2"
     awk -F, '$1 ~ /^[0-9]+$/ {printf "%s ", $1}' $WORK/perf.out
   }
   read -r cN iN pN q1N   <<<"$(ctr "$GA" $TRIALS)"
@@ -141,6 +143,7 @@ for g in $GRAPHS; do
           (c>0?100*q/c:0),(d>0?100*a/d:0),(d>0?100*b/d:0),(d>0?100*x/d:0) }'
 done
 REMOTE
+  ssh -o BatchMode=yes "$ADDR" "rm -f $REMOTE_BIN /tmp/converter.$$" 2>/dev/null || true
 done
 
 echo >&2; column -s, -t < "$CSV"; echo >&2; echo "results: $CSV" >&2

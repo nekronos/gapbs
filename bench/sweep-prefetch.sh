@@ -55,12 +55,13 @@ for D in $DISTS; do
   nix-shell -p llvmPackages_22.clang --run \
     "clang++ -std=c++11 -O3 -Wall -g -fno-omit-frame-pointer -static -march=$MARCH \
      -DPR_PREFETCH_DIST=$D -DPR_PREFETCH_HINT=$HINT -DPR_PREFETCH_FLAT=$FLAT src/$KERNEL.cc -o '$B/pr'"
-  scp -q -o BatchMode=yes "$B/pr" "$ADDR:/tmp/pr_sweep"
+  RB=/tmp/pr_sweep.$$
+  scp -q -o BatchMode=yes "$B/pr" "$ADDR:$RB"
   for g in $GRAPHS; do
     EXT=$(graph_ext)
     f=$([[ $TIER == standard ]] && echo "\$HOME/code/gapbs/benchmark/graphs/$g.$EXT" || echo "/tmp/zenbench/$g-g$SCALE.$EXT")
     ARGS=$(kernel_args "$TRIALS")
-    raw=$(ssh -o BatchMode=yes "$ADDR" "taskset -c $CPU /tmp/pr_sweep -f $f $ARGS" 2>/dev/null)
+    raw=$(ssh -o BatchMode=yes "$ADDR" "taskset -c $CPU $RB -f $f $ARGS" 2>/dev/null)
     avg=$(sed -n 's/^Average Time: *//p' <<<"$raw")
     [[ -n "$avg" ]] || { echo "  D=$D $g: NO TIMING (exec failed?) -- skipped" >&2; continue; }
     edges=$(sed -n 's/^Graph has [0-9]* nodes and \([0-9]*\) .*/\1/p' <<<"$raw")
@@ -69,7 +70,7 @@ for D in $DISTS; do
     # the probe is a second full run of the workload for a number that does not
     # exist, so it is skipped rather than discarded.
     case $KERNEL in
-      pr|pr_spmv) iters=$(ssh -o BatchMode=yes "$ADDR" "taskset -c $CPU /tmp/pr_sweep -f $f $(kernel_args 1) -l" 2>/dev/null | grep -cE '^ *[0-9]+ ') ;;
+      pr|pr_spmv) iters=$(ssh -o BatchMode=yes "$ADDR" "taskset -c $CPU $RB -f $f $(kernel_args 1) -l" 2>/dev/null | grep -cE '^ *[0-9]+ ') ;;
       *)          iters=1 ;;
     esac
     [[ ${iters:-0} -gt 0 ]] || iters=1
@@ -83,5 +84,6 @@ for D in $DISTS; do
          (e*it>0?avg*1e9/(e*it):0),(avg>0 && b>0 ? b/avg : 0) }' | tee -a "$CSV" >&2
   done
 done
+ssh -o BatchMode=yes "$ADDR" "rm -f /tmp/pr_sweep.$$" 2>/dev/null || true
 
 echo >&2; column -s, -t < "$CSV"; echo "results: $CSV" >&2

@@ -113,4 +113,89 @@ smaller scale; the ranking should hold, the absolute values will not.
 
 ### Results
 
-*(pending)*
+All at g27 on the target. `kron` is power-law (average degree 15.7, hubs carry
+most edges); `urand` is uniform-random with Poisson(16) degrees.
+
+| kernel | form | kron | urand | optimal D |
+| --- | --- | ---: | ---: | ---: |
+| **`cc_sv`** | within-vertex | **2.02x** | 1.08x | 128 |
+| `pr` | **flat** | 1.44x | **1.20x** | 128 |
+| `pr_spmv` | **flat** | 1.41x | **1.18x** | 128 |
+| `sssp` | within-vertex | 1.36x | **0.86x** | 128 |
+| `bc` | within-vertex | 1.09x | **0.93x** | 64 |
+
+**D=128 is optimal for four of five kernels**, across 4-byte and 8-byte
+neighbour elements, sequential/bucket/frontier iteration orders, and both
+prefetch forms. That points at the distance being set by DRAM latency against
+issue rate rather than by anything kernel-specific.
+
+### The result that matters most: form decides generality
+
+The within-vertex loop split fires only for vertices with more than `D`
+neighbours. On `kron` the hubs carry most edges, so covering a minority of
+vertices still covers a majority of work. On `urand`, with Poisson(16) degrees,
+**P(degree > 128) is vanishing — essentially no prefetch ever issues.**
+
+What remains on `urand` is the loop restructuring alone, and its codegen effect
+is arbitrary: **-14.3% on `sssp`, -7.4% on `bc`, +8.4% on `cc_sv`.** Not
+neutral, just unrelated to prefetching.
+
+The flat-CSR form has no such dependence — it prefetches `D` edges ahead
+through the flattened array regardless of any vertex's degree — and it is the
+only form that gains on both graph shapes (`pr` 1.44x/1.20x, `pr_spmv`
+1.41x/1.18x).
+
+**So the honest claim is narrower than the headline numbers.** `cc_sv`'s 2.02x
+is a power-law result. `sssp` and `bc` are power-law results that turn into
+regressions on uniform degrees. Only `pr` and `pr_spmv` — the two kernels whose
+sequential outer walk admits the flat form — are general.
+
+The flat form requires the outer iteration to be sequential in the CSR layout.
+`pr`/`pr_spmv` walk `u = 0..n`. `bc` walks a frontier queue where the next
+vertex is `u+1` in 0.15-0.22% of steps; `sssp` walks delta-stepping buckets;
+`cc_sv`'s gather sits behind an indirection. For those three the flat form is
+meaningless, which is why they are stuck with a degree-dependent technique.
+
+### `cc_sv` mechanism, both parts
+
+| | cyc/edge | IPC | MLP | >=32 | >=64 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| zen5 D=0 | 150.72 | 0.410 | 13.84 | **0.0%** | 0.0% |
+| zen5 D=128 | **73.96** | **0.966** | **23.24** | **40.8%** | **16.3%** |
+| zen4 D=0 | 157.23 | 0.394 | 12.19 | 0.0% | 0.0% |
+| zen4 D=128 | 165.60 | 0.434 | 12.04 | 0.0% | 0.0% |
+
+Two things stand out. **`cc_sv`'s mean MLP rises** (13.84 to 23.24) where
+`pr`'s fell — `cc_sv` was starved enough at baseline that prefetch adds net
+concurrency instead of converting misses to hits. And **the two parts start
+nearly equal** (12.19 against 13.84 MLP, 157 against 151 cycles per edge, Zen 4
+only 11% slower) and diverge to 2.4x once prefetch asks for miss capacity that
+only one of them has.
+
+### Scoring the predictions
+
+The candidate ranking was written before any testing.
+
+| kernel | predicted | actual (kron) |
+| --- | --- | ---: |
+| `pr_spmv` | Tier 1, near-certain | +41% |
+| `bc` | Tier 1, strong | +9% |
+| `sssp` | Tier 2, +10-18% | +36% |
+| `cc_sv` | Tier 2, single digits | **+102%** |
+
+**Four for four on direction. Zero for four on magnitude, with the order
+inverted** — the kernel ranked last is the largest win by 2x, the one ranked
+first the smallest.
+
+The ranking asked whether the access pattern *admits* a prefetch, and that
+predicted the sign every time. Magnitude is governed by two things it never
+considered: what fraction of the kernel's runtime the prefetchable gather
+represents, and how miss-dense that gather is. Both were measurable up front.
+
+The `cc_sv` miss is the instructive one. I reasoned that pointer jumping puts
+half its misses out of reach — but `comp[comp[v]]` is *conditional*, taken only
+when `comp_u != comp_v`, which after the first iteration is rare. The first hop
+is nearly all the misses and fully prefetchable, over a 536 MB array touched
+~4.2 billion times. **Reasoning about the structure of an access pattern
+without asking how often each branch of it executes** is the same error that
+produced the wrong `urand` conclusion in campaign 1.

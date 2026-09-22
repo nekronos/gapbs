@@ -1,1 +1,3 @@
 host,cpu,march,dist,hint,flat,sha,tier,graph,nodes,edges,iters,trials,avg_time_s,min_trial_s,cycles_per_edge_iter,ipc,mlp,mlp_cond,pct_cyc_miss,pct_ge16,pct_ge32,pct_ge64
+zen5,8,znver5,0,3,0,a53039cb7e5cf7ed,standard,kron,134217728,2111632379,1,4,58.35978,58.14861,150.715,0.410,13.84,13.98,99.0,38.0,0.0,0.0
+zen4,8,znver4,0,3,0,a53039cb7e5cf7ed,standard,kron,134217728,2111632379,1,4,64.70749,64.48801,157.228,0.394,12.19,12.31,99.0,29.8,0.0,0.0
