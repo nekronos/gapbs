@@ -407,3 +407,56 @@ predicted the sign correctly every time. Magnitude turned out to be governed by
 two things the ranking never considered: what fraction of the kernel's runtime
 the prefetchable gather represents, and how miss-dense that gather is. Both are
 measurable up front; neither was measured.
+
+## Postscript: what the compilers already do (2026-09-23)
+
+`cc_sv`, unaltered source, Zen 5, kron g27, `taskset -c 8`, wall clock under
+`perf stat`, two runs each.
+
+**No compiler emits the indirect prefetch.** clang 22, AOCC 5.1.0 (plain,
+`-flto`, `-fprefetch-loop-arrays`) and GCC 15.3 `-fprefetch-loop-arrays` each
+emit exactly 196 prefetch instructions, byte-identical in form, every one a
+constant-offset `prefetcht0`/`t1` inside static libc. The manual builds carry
+one more — the scaled-index gather form, `prefetcht0 (%r14,%rcx,4)`. LLVM's
+`LoopDataPrefetch` and GCC's `aprefetch` work from affine SCEV address
+expressions, and `comp[*p]` is not affine in the induction variable.
+
+**AOCC was 26% faster anyway, and it is loop alignment.** The hot loop is the
+same instructions in the same order (clang `0x405870`, AOCC `0x3f0ec0` inlined
+into `main` under `-flto`). Instructions differ 1.2% — clang's extra
+`inc %esi` + `movslq` in the *outer* loop — and branch misses are a wash, so
+all 65 G cycles of the gap are stall.
+
+| build | loop head | sec | Gcycles | IPC | mean MLP |
+| --- | --- | ---: | ---: | ---: | ---: |
+| clang 22 | `%64 = 48`, straddles | 59.59 / 60.27 | 324.2 / 328.1 | 0.406 | 14.0 |
+| clang `-falign-loops=32` | `%64 = 32` | 51.03 / 53.28 | 277.5 / 289.7 | 0.464 | 16.7 |
+| clang `-falign-loops=64` | `%64 = 0` | 47.50 / 47.86 | 258.3 / 260.2 | 0.507 | 18.0 |
+| AOCC 5.1.0 `-flto` | `%64 = 0` | 47.78 / 47.30 | 259.9 / 257.2 | 0.503 | 18.0 |
+
+AOCC 64-aligns loop heads with and without `-flto`, so it is its default, not
+an LTO effect. Aligned clang matches AOCC on every counter.
+
+**Prefetch subsumes alignment; they are not additive.**
+
+| | sec | vs clang baseline |
+| --- | ---: | ---: |
+| clang 22 `-O3 -march=znver5` | 59.9 | 1.00x |
+| `-falign-loops=64` (= AOCC) | 47.7 | 1.26x |
+| prefetch D=128 alone | 30.43 / 30.54 | 1.97x |
+| alignment + prefetch | 30.09 / 30.20 | **1.99x** |
+
+Adding alignment on top of the prefetch buys 1.1%, inside the 2% noise floor:
+once the prefetch is in, the loop waits on memory and the fetch bubble hides
+behind the miss. Both prefetch builds land at `%64 = 16` — adding the
+instruction moved the loop off AOCC's aligned slot too — so the campaign's
+2.02x compares two equally misaligned builds and is not alignment luck.
+
+**Restatement.** 2.02x is against clang 22 and stands. 1.26x of that gap is
+also reachable by a flag unrelated to prefetching, so the prefetch-specific
+increment over a best-compiled baseline is **1.58x**. Measured on `cc_sv` only;
+the other four kernels' baselines were not checked for the same accident.
+
+*Hazard hit again:* a failed `scp` left the binary absent, and `perf stat` on
+the failed exec reported plausible-looking IPC and MLP with 0.00 s elapsed. The
+rerun greps the kernel's own "Average Time" line before trusting any counter.
