@@ -51,9 +51,6 @@ using namespace std;
 #ifndef PR_PREFETCH_FLAT
 #define PR_PREFETCH_FLAT 0
 #endif
-#if PR_PREFETCH_FLAT
-#error "cc_sv: the flat-CSR lookahead is meaningless here (the gather sits behind the comp[] indirection); build with PR_PREFETCH_FLAT=0"
-#endif
 
 
 // The hooking condition (comp_u < comp_v) may not coincide with the edge's
@@ -66,12 +63,39 @@ pvector<NodeID> ShiloachVishkin(const Graph &g) {
     comp[n] = n;
   bool change = true;
   int num_iter = 0;
+#if PR_PREFETCH_DIST > 0 && PR_PREFETCH_FLAT
+  const NodeID *edge_end =
+      g.num_nodes() > 0 ? g.out_neigh(g.num_nodes() - 1).end() : nullptr;
+#endif
   while (change) {
     change = false;
     num_iter++;
     #pragma omp parallel for
     for (NodeID u=0; u < g.num_nodes(); u++) {
-#if PR_PREFETCH_DIST > 0
+#if PR_PREFETCH_DIST > 0 && PR_PREFETCH_FLAT
+      auto out_nb = g.out_neigh(u);
+      const NodeID *last = out_nb.end();
+      for (const NodeID *p = out_nb.begin(); p < last; p++) {
+        // edge_end - p > D rather than p + D < edge_end: the latter forms a
+        // pointer past the end of the array, which is undefined behaviour even
+        // though it compiles to the same lea/cmp/cmov here.
+        const NodeID *pf = (edge_end - p > PR_PREFETCH_DIST)
+                               ? p + PR_PREFETCH_DIST
+                               : edge_end - 1;
+        __builtin_prefetch(&comp[*pf], 0, PR_PREFETCH_HINT);
+        NodeID v = *p;
+        NodeID comp_u = comp[u];
+        NodeID comp_v = comp[v];
+        if (comp_u == comp_v) continue;
+        // Hooking condition so lower component ID wins independent of direction
+        NodeID high_comp = comp_u > comp_v ? comp_u : comp_v;
+        NodeID low_comp = comp_u + (comp_v - high_comp);
+        if (high_comp == comp[high_comp]) {
+          change = true;
+          comp[high_comp] = low_comp;
+        }
+      }
+#elif PR_PREFETCH_DIST > 0
       auto out_nb = g.out_neigh(u);
       const NodeID *first = out_nb.begin();
       const NodeID *last = out_nb.end();

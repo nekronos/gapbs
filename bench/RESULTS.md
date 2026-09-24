@@ -460,3 +460,50 @@ the other four kernels' baselines were not checked for the same accident.
 *Hazard hit again:* a failed `scp` left the binary absent, and `perf stat` on
 the failed exec reported plausible-looking IPC and MLP with 0.00 s elapsed. The
 rerun greps the kernel's own "Average Time" line before trusting any counter.
+
+## Correction: cc_sv admits the flat form (2026-09-24)
+
+`src/cc_sv.cc` carried an `#error` asserting the flat-CSR lookahead was
+meaningless here, "the gather sits behind the comp[] indirection". That is true
+of the *second* hop `comp[comp[v]]`, which no form reaches. The first hop
+`comp[v]` is a plain gather off the flat neighbour array, and the outer walk is
+`for (u = 0; u < g.num_nodes(); u++)` — storage order, the same shape as `pr`.
+The `#error` was wrong and the kernel was measured with the weaker form.
+
+zen5, g27, 3 trials, clang 22 `-O3 -march=znver5`, both verified PASS:
+
+| graph | D | within-vertex | flat | form is worth |
+| --- | ---: | ---: | ---: | ---: |
+| kron | 32 | 1.678 | 1.629 | 0.97x |
+| kron | 128 | 2.020 | **2.869** | **1.42x** |
+| urand | 32 | — | 1.703 | |
+| urand | 128 | 1.084 | **2.148** | **1.98x** |
+
+Raw: kron 58.29 -> 20.32 s, urand 83.80 -> 39.01 s.
+
+At D=32 the two forms are level; the flat form's advantage is entirely at large
+D, which is what the mechanism predicts — the within-vertex lookahead can only
+fire on vertices longer than D, and at avg degree 15.7 that set empties as D
+grows. **`urand` is not a non-target for this kernel**: the earlier 1.08x was
+the within-vertex form issuing almost no prefetches at Poisson(16) degrees.
+
+## Translation: the gather's page-walk rate (2026-09-24)
+
+`cc_sv` kron g27, `taskset -c 8`, n=1, THP toggled and restored.
+`pagewalks` = `ls_l1_d_tlb_miss.all_l2_miss`.
+
+| THP | build | sec | DTLB misses | page walks | walks/1k cyc | walk rate |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| always | D=0 | 60.19 | 5.08e9 | 1.84e6 | 0.01 | 0.04% |
+| always | D=128 flat | 21.46 | 9.48e9 | 2.20e6 | 0.02 | 0.02% |
+| never | D=0 | 68.47 | 1.29e10 | 1.19e10 | 31.9 | 91.6% |
+| never | D=128 flat | 28.97 | 2.53e10 | 1.21e10 | 77.8 | 47.8% |
+
+Under THP, 92.5% of reloads are 2M hits and translation is free. Without it the
+gather walks on 91.6% of L1 misses — 6500x the walks — costing 13.8% on the
+baseline and 35% on the prefetched build. The prefetch still delivers 2.36x
+without huge pages against 2.80x with them.
+
+**The prefetch is also a TLB prefetch.** At THP=never lookups double while walks
+stay flat: the demand load's lookup hits because the prefetch already walked and
+installed the mapping.
